@@ -4,6 +4,15 @@ import { SystemRng, type Rng } from "./rng.js";
 /** Default per-pull discount applied to an arm's own accumulated evidence on each update. */
 export const DEFAULT_DECAY = 0.995;
 
+/** A candidate model's current stats for a category, for observability and escalation decisions. */
+export interface CandidateStats {
+  modelId: string;
+  cost: number;
+  meanSuccessRate: number;
+  /** Effective evidence accumulated so far (decayed), not a raw lifetime call count. */
+  pulls: number;
+}
+
 /** One candidate model within a task category. */
 export class Arm {
   modelId: string;
@@ -106,6 +115,15 @@ export class CategoryRouter {
     }
     arm.update(reward);
   }
+
+  getCandidates(): CandidateStats[] {
+    return [...this.arms.values()].map((arm) => ({
+      modelId: arm.modelId,
+      cost: arm.cost,
+      meanSuccessRate: arm.alpha / (arm.alpha + arm.beta),
+      pulls: arm.alpha - arm.priorAlpha + (arm.beta - arm.priorBeta),
+    }));
+  }
 }
 
 /** Per-category Thompson-sampling router across configured worker models. */
@@ -182,5 +200,10 @@ export class Router {
   /** Exposed for tests/inspection; not part of the routing API surface. */
   getArm(category: string, modelId: string): Arm | undefined {
     return this.categories.get(category)?.arms.get(modelId);
+  }
+
+  /** Current stats for every candidate in a category; empty if the category is unknown. */
+  getCandidates(category: string): CandidateStats[] {
+    return this.categories.get(category)?.getCandidates() ?? [];
   }
 }
