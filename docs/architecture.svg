@@ -1,0 +1,96 @@
+<svg viewBox="0 0 760 950" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>Hybrid router architecture</title>
+<desc>A pipeline from user request through an orchestrator, classifier, and context compiler into a hybrid router that combines a Thompson sampling bandit with occasional LLM escalation, informed by a stats store and budget governor, dispatching to one of several worker models, executing, and collecting reward that feeds back into the stats store and escalation path.</desc>
+<defs>
+<marker id="arrowFlow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#52525b"/></marker>
+<marker id="arrowFeedback" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#a1a1aa"/></marker>
+</defs>
+
+<rect width="760" height="950" fill="#ffffff"/>
+
+<rect x="310" y="40" width="140" height="50" rx="8" fill="#f4f4f5" stroke="#d4d4d8" stroke-width="1.5"/>
+<text x="380" y="69" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#18181b">User request</text>
+<path d="M380,90 L380,150" stroke="#52525b" stroke-width="1.5" fill="none" marker-end="url(#arrowFlow)"/>
+
+<rect x="265" y="150" width="230" height="55" rx="8" fill="#f4f4f5" stroke="#d4d4d8" stroke-width="1.5"/>
+<text x="380" y="173" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#18181b">Orchestrator</text>
+<text x="380" y="190" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#52525b">Decompose + risk hints</text>
+<path d="M380,205 L380,225 L280,225 L280,265" stroke="#52525b" stroke-width="1.5" fill="none" marker-end="url(#arrowFlow)"/>
+<path d="M380,205 L380,225 L470,225 L470,265" stroke="#52525b" stroke-width="1.5" fill="none" marker-end="url(#arrowFlow)"/>
+
+<rect x="200" y="265" width="160" height="55" rx="8" fill="#f4f4f5" stroke="#d4d4d8" stroke-width="1.5"/>
+<text x="280" y="288" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#18181b">Task classifier</text>
+<text x="280" y="305" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#52525b">Category label</text>
+
+<rect x="380" y="265" width="180" height="55" rx="8" fill="#f4f4f5" stroke="#d4d4d8" stroke-width="1.5"/>
+<text x="470" y="288" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#18181b">Context compiler</text>
+<text x="470" y="305" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#52525b">Minimal context slice</text>
+
+<path d="M280,320 L280,357 L380,357 L380,395" stroke="#52525b" stroke-width="1.5" fill="none" marker-end="url(#arrowFlow)"/>
+<path d="M470,320 L470,357 L380,357 L380,395" stroke="#52525b" stroke-width="1.5" fill="none" marker-end="url(#arrowFlow)"/>
+
+<rect x="170" y="395" width="420" height="150" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+<text x="380" y="418" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="600" fill="#4338ca">Router</text>
+
+<rect x="190" y="435" width="170" height="60" rx="8" fill="#ffffff" stroke="#6366f1" stroke-width="1.25"/>
+<text x="275" y="460" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#18181b">Bandit core</text>
+<text x="275" y="477" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#52525b">Thompson sampling</text>
+
+<rect x="380" y="435" width="190" height="60" rx="8" fill="#ffffff" stroke="#6366f1" stroke-width="1.25"/>
+<text x="475" y="460" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#18181b">LLM escalation</text>
+<text x="475" y="477" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#52525b">Cold-start / high risk</text>
+
+<text x="370" y="450" text-anchor="middle" font-family="sans-serif" font-size="10" fill="#71717a">if uncertain</text>
+<path d="M360,465 L380,465" stroke="#a1a1aa" stroke-width="1.5" stroke-dasharray="4,3" fill="none" marker-end="url(#arrowFeedback)"/>
+
+<rect x="10" y="438" width="150" height="55" rx="8" fill="#f4f4f5" stroke="#d4d4d8" stroke-width="1.5"/>
+<text x="85" y="461" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#18181b">Stats store</text>
+<text x="85" y="478" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#52525b">Success history</text>
+<path d="M160,465.5 L170,465.5" stroke="#52525b" stroke-width="1.5" fill="none" marker-end="url(#arrowFlow)"/>
+
+<rect x="600" y="438" width="160" height="55" rx="8" fill="#f4f4f5" stroke="#d4d4d8" stroke-width="1.5"/>
+<text x="680" y="461" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#18181b">Budget governor</text>
+<text x="680" y="478" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#52525b">Burn-rate signal</text>
+<path d="M600,465.5 L590,465.5" stroke="#52525b" stroke-width="1.5" fill="none" marker-end="url(#arrowFlow)"/>
+
+<path d="M380,545 L380,575" stroke="#52525b" stroke-width="1.5" fill="none"/>
+<path d="M176.5,575 L588,575" stroke="#52525b" stroke-width="1.5" fill="none"/>
+<path d="M176.5,575 L176.5,600" stroke="#52525b" stroke-width="1.5" fill="none" marker-end="url(#arrowFlow)"/>
+<path d="M384,575 L384,600" stroke="#52525b" stroke-width="1.5" fill="none" marker-end="url(#arrowFlow)"/>
+<path d="M588,575 L588,600" stroke="#52525b" stroke-width="1.5" fill="none" marker-end="url(#arrowFlow)"/>
+
+<rect x="84" y="600" width="185" height="60" rx="8" fill="#f4f4f5" stroke="#d4d4d8" stroke-width="1.5"/>
+<text x="176.5" y="625" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#18181b">Local model</text>
+<text x="176.5" y="642" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#52525b">Cheapest, narrow tasks</text>
+
+<rect x="289" y="600" width="190" height="60" rx="8" fill="#f4f4f5" stroke="#d4d4d8" stroke-width="1.5"/>
+<text x="384" y="625" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#18181b">Mid-tier API</text>
+<text x="384" y="642" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#52525b">Balanced cost, quality</text>
+
+<rect x="499" y="600" width="178" height="60" rx="8" fill="#f4f4f5" stroke="#d4d4d8" stroke-width="1.5"/>
+<text x="588" y="625" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#18181b">Frontier model</text>
+<text x="588" y="642" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#52525b">Hardest, highest cost</text>
+
+<path d="M176.5,660 L176.5,695" stroke="#52525b" stroke-width="1.5" fill="none"/>
+<path d="M384,660 L384,695" stroke="#52525b" stroke-width="1.5" fill="none"/>
+<path d="M588,660 L588,695" stroke="#52525b" stroke-width="1.5" fill="none"/>
+<path d="M176.5,695 L588,695" stroke="#52525b" stroke-width="1.5" fill="none"/>
+<path d="M380,695 L380,720" stroke="#52525b" stroke-width="1.5" fill="none" marker-end="url(#arrowFlow)"/>
+
+<rect x="280" y="720" width="200" height="55" rx="8" fill="#f4f4f5" stroke="#d4d4d8" stroke-width="1.5"/>
+<text x="380" y="743" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#18181b">Executor</text>
+<text x="380" y="760" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#52525b">Tool-use loop, sandboxed</text>
+<path d="M380,775 L380,790" stroke="#52525b" stroke-width="1.5" fill="none" marker-end="url(#arrowFlow)"/>
+
+<rect x="265" y="790" width="230" height="55" rx="8" fill="#f4f4f5" stroke="#d4d4d8" stroke-width="1.5"/>
+<text x="380" y="813" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#18181b">Reward collector</text>
+<text x="380" y="830" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#52525b">Tests, proxies, judge sample</text>
+
+<path d="M495,817.5 L700,817.5 L700,630 L677,630" stroke="#a1a1aa" stroke-width="1.5" stroke-dasharray="5,4" fill="none" marker-end="url(#arrowFeedback)"/>
+<text x="597" y="805" text-anchor="middle" font-family="sans-serif" font-size="10" fill="#71717a">escalate on failure</text>
+
+<path d="M265,817.5 L60,817.5 L60,493 L85,493" stroke="#a1a1aa" stroke-width="1.5" stroke-dasharray="5,4" fill="none" marker-end="url(#arrowFeedback)"/>
+<text x="160" y="805" text-anchor="middle" font-family="sans-serif" font-size="10" fill="#71717a">update stats</text>
+
+<text x="380" y="910" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#71717a">solid = always-on flow, dashed = conditional / feedback</text>
+</svg>
