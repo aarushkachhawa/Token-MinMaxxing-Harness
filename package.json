@@ -1,0 +1,15 @@
+{
+  "name": "token-maxxing-harness",
+  "version": "0.1.0",
+  "description": "Agentic coding harness that min-maxes token spend with a custom model router",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.0"
+  }
+}
