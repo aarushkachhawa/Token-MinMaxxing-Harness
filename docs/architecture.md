@@ -51,10 +51,23 @@ occasionally win by chance even with a middling mean — that's exploration happ
 to actual uncertainty, with no hand-tuned exploration rate, and it decays naturally as an arm
 accumulates evidence.
 
-Cost is folded in as `θ − λ·cost` at decision time (θ = the sampled quality belief, cost = the
-registry's known per-model cost, λ = a weight the budget governor turns up as burn-rate rises) —
-this keeps "does it work" (learned) cleanly separate from "how much do we care about cost right
-now" (a dial), rather than tangling both into one posterior.
+Cost is folded in as `θ − λ·normalized_cost` at decision time (θ = the sampled quality belief, λ =
+a weight the budget governor turns up as burn-rate rises). `normalized_cost` is each arm's cost
+rescaled to `[0, 1]` relative to the cheapest and priciest candidate *within that category* —
+without this, λ has no portable meaning: the same λ that meaningfully trades off a $0.001 vs $0.05
+difference on a small edit would be almost inert on a category with 10x the token volume, since raw
+dollar costs scale with category size. Normalizing keeps "does it work" (learned) cleanly separate
+from "how much do we care about cost right now" (a dial that means the same thing everywhere),
+rather than tangling both into one posterior.
+
+Reward passed to an arm is a float in `[0, 1]`, not a bare success/fail boolean — this is what lets
+the reward signal below (a blend of deterministic checks, proxies, and judge sampling) feed the
+bandit directly instead of being collapsed to a boolean first and losing the graded signal.
+
+Registering an arm is idempotent: re-registering an already-known `(category, model)` pair (e.g. on
+every config reload) refreshes its cost but leaves learned `alpha`/`beta` untouched. Deliberately
+discarding history (e.g. after a known model version swap) goes through a separate `resetArm()`
+call, so a routine config reload can never silently erase weeks of learned routing behavior.
 
 ### LLM escalation
 
@@ -81,8 +94,14 @@ tiers by trust:
    the user for pass/fail, used to calibrate that (1) and (2) actually track real quality rather than
    optimizing for "passed lint" while quality silently drifts.
 
-Stats decay (exponential window) so a model that gets better or worse over time is reflected in
-weeks, not never; a manual reset is available for when a model version is known to have changed.
+Each arm discounts its own accumulated evidence back toward its prior on every update (default
+decay 0.995, ~140-pull half-life), so a regression or improvement is reflected within a bounded
+number of pulls instead of requiring an ever-growing number of contradicting observations to move
+the posterior. This decay is per-pull, not wall-clock — an arm that stops being used at all simply
+keeps its last belief, which is the correct behavior (nothing contradicted it) but means a model
+that quietly gets replaced upstream without ever failing won't be caught by decay alone; that's what
+`resetArm()` and judge sampling are for. A manual `resetArm()` is available for when a model version
+is known to have changed.
 
 ## Multi-provider model registry
 
@@ -100,3 +119,8 @@ Anthropic) is a registry entry, not new routing code.
 - **Contextual features**: if per-category routing proves too coarse along a specific dimension
   (language, file size), promote it to an explicit bandit context feature rather than adding it
   speculatively.
+- **Escalation cost isn't modeled yet**: the router's cost term only counts the arm it picked, but a
+  cheap arm's true expected cost includes `P(fail) x cost of the escalated retry`. A flaky-but-cheap
+  model is currently undercosted, and gets tried first even on categories where a failed attempt is
+  expensive (side effects, wasted tokens). Needs revisiting once the executor and escalation loop
+  exist and failure probabilities are actually observable.
