@@ -9,7 +9,13 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@types/node": "^26.1.1",
     "typescript": "^5.7.0",
     "vitest": "^3.2.0"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.18",
+    "ai": "^7.0.35",
+    "zod": "^4.4.3"
   }
 }
