@@ -7,7 +7,9 @@
     "test": "vitest run",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
-    "demo": "tsx src/demo.ts"
+    "demo": "tsx src/demo.ts",
+    "demo:real": "tsx --env-file=.env src/live-check.ts",
+    "demo:real-pipeline": "tsx --env-file=.env src/demo-real.ts"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

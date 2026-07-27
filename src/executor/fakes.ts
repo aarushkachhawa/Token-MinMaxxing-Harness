@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { GenerateOptions, GenerateResult, ModelClient, Tool } from "./types.js";
 
 /** Returns a fixed, scripted sequence of responses — one per call to generate(). */
@@ -31,7 +32,7 @@ export function fakeTool(
   return {
     name,
     description: `fake tool "${name}"`,
-    parameters: {},
+    parameters: z.object({}),
     execute,
   };
 }

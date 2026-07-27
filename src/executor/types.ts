@@ -1,3 +1,5 @@
+import type { ZodTypeAny } from "zod";
+
 export type Message =
   | { role: "user"; content: string }
   | { role: "assistant"; content: string }
@@ -5,8 +7,7 @@ export type Message =
 
 export interface ToolDefinition {
   description: string;
-  /** JSON-schema-shaped, kept as unknown until we pick a concrete schema library for the real provider client. */
-  parameters: unknown;
+  parameters: ZodTypeAny;
 }
 
 export interface ToolCall {
@@ -36,7 +37,7 @@ export interface ModelClient {
 export interface Tool {
   name: string;
   description: string;
-  parameters: unknown;
+  parameters: ZodTypeAny;
   execute(args: Record<string, unknown>): Promise<unknown>;
 }
 
