@@ -124,3 +124,6 @@ Anthropic) is a registry entry, not new routing code.
   model is currently undercosted, and gets tried first even on categories where a failed attempt is
   expensive (side effects, wasted tokens). Needs revisiting once the executor and escalation loop
   exist and failure probabilities are actually observable.
+- **`read_file` has no offset/limit**: v1 reads the whole file (up to a ~100KB truncation cap) rather
+  than supporting a line-range read. Revisit if truncation on large files turns out to bite in
+  practice — offset/limit would let a worker ask for a specific slice instead of just the head.
