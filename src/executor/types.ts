@@ -2,7 +2,9 @@ import type { ZodTypeAny } from "zod";
 
 export type Message =
   | { role: "user"; content: string }
-  | { role: "assistant"; content: string }
+  /** toolCalls is always non-empty in practice: a final-answer turn (no tool calls) ends the
+   * run immediately and is never appended to history -- see Executor.run(). */
+  | { role: "assistant"; content: string | null; toolCalls: ToolCall[] }
   | { role: "tool"; toolCallId: string; toolName: string; result: unknown };
 
 export interface ToolDefinition {

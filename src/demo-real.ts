@@ -1,8 +1,8 @@
 /**
- * Same pipeline as demo.ts, but the executor calls a real Anthropic model instead of a
- * scripted one -- so the model's final answer (and any tool-calling decisions) are genuinely
- * generated, not canned. Orchestrator decomposition, classifier fallback, and escalation are
- * still scripted; wiring those up to a real LLM is a separate, unscoped step.
+ * Same pipeline as demo.ts, but the executor calls a real Anthropic model against the real,
+ * sandboxed read_file tool instead of scripted/fake ones -- so both the model's answers and
+ * its tool-calling decisions are genuine. Orchestrator decomposition, classifier fallback, and
+ * escalation are still scripted; wiring those up to a real LLM is a separate, unscoped step.
  *
  * Spends real tokens on the key in .env every time it runs.
  * Usage: npm run demo:real-pipeline -- "your request description here"
@@ -11,20 +11,21 @@ import { DEFAULT_CLASSIFICATION_RULES, ScriptedClassifierClient, TaskClassifier 
 import { getAnthropicApiKey } from "./config/env.js";
 import { AnthropicModelClient } from "./executor/anthropic-model-client.js";
 import { Executor } from "./executor/executor.js";
-import { fakeTool } from "./executor/fakes.js";
-import type { ModelClient } from "./executor/types.js";
+import type { ModelClient, Tool } from "./executor/types.js";
 import { Orchestrator, ScriptedOrchestratorClient, type Subtask } from "./orchestrator/index.js";
 import { RewardCollector } from "./reward/reward-collector.js";
 import { Router } from "./router/bandit.js";
 import { ScriptedEscalationClient } from "./router/escalation.js";
 import { HybridRouter } from "./router/hybrid-router.js";
+import { createReadFileTool } from "./tools/index.js";
 
 async function runSubtask(
   subtask: Subtask,
   bandit: Router,
   classifier: TaskClassifier,
   rewardCollector: RewardCollector,
-  modelClient: ModelClient
+  modelClient: ModelClient,
+  readFileTool: Tool
 ): Promise<void> {
   console.log(`--- Subtask "${subtask.id}": ${subtask.description} ---`);
 
@@ -46,12 +47,12 @@ async function runSubtask(
   });
   console.log(`Routed to: "${decision.modelId}" (escalated: ${decision.escalated})`);
 
-  // Execute — real tool-use loop against a real model. The tool itself is still fake (no real
-  // filesystem access) so we can see how a real model chooses to use it, without the risk.
-  const readFile = fakeTool("read_file", async () => ({ contents: "// TODO: fix this loop" }));
-  const executor = new Executor(modelClient, [readFile]);
+  // Execute — real tool-use loop against a real model and the real, sandboxed read_file tool.
+  const executor = new Executor(modelClient, [readFileTool]);
   const result = await executor.run(
-    "You are a careful coding assistant. Use the read_file tool if you need to see the file before answering. Be brief.",
+    "You are a careful coding assistant working in this project's repository. Use the " +
+      "read_file tool (paths relative to the project root, e.g. README.md) if you need to see " +
+      "a file before answering -- don't assume a file exists if you haven't read it. Be brief.",
     subtask.description
   );
   console.log(`Executor finished ("${result.stopReason}"): "${result.finalText}"`);
@@ -102,11 +103,12 @@ async function main() {
   const bandit = new Router();
   const rewardCollector = new RewardCollector();
   const modelClient = new AnthropicModelClient({ apiKey: getAnthropicApiKey() });
+  const readFileTool = createReadFileTool(process.cwd());
 
   const completed = new Set<string>();
   while (!orchestrator.isComplete(plan, completed)) {
     for (const subtask of orchestrator.getReadySubtasks(plan, completed)) {
-      await runSubtask(subtask, bandit, classifier, rewardCollector, modelClient);
+      await runSubtask(subtask, bandit, classifier, rewardCollector, modelClient, readFileTool);
       completed.add(subtask.id);
     }
   }

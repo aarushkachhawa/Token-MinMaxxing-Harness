@@ -1,5 +1,5 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
-import { generateText, tool, type ModelMessage } from "ai";
+import { generateText, tool, type ModelMessage, type TextPart, type ToolCallPart } from "ai";
 import type { GenerateOptions, GenerateResult, Message, ModelClient, ToolCall } from "./types.js";
 
 export interface AnthropicModelClientOptions {
@@ -56,8 +56,16 @@ function toModelMessage(message: Message): ModelMessage {
   switch (message.role) {
     case "user":
       return { role: "user", content: message.content };
-    case "assistant":
-      return { role: "assistant", content: message.content };
+    case "assistant": {
+      const content: Array<TextPart | ToolCallPart> = [];
+      if (message.content) {
+        content.push({ type: "text", text: message.content });
+      }
+      for (const call of message.toolCalls) {
+        content.push({ type: "tool-call", toolCallId: call.id, toolName: call.toolName, input: call.args });
+      }
+      return { role: "assistant", content };
+    }
     case "tool":
       return {
         role: "tool",

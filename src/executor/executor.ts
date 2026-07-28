@@ -57,8 +57,11 @@ export class Executor {
         };
       }
 
+      // Record this turn's tool-call request in history *before* the tool results, regardless
+      // of whether it came with text -- a tool-result message with no preceding matching
+      // tool-call is invalid input to a real provider (caught only once we tried one for real).
+      messages.push({ role: "assistant", content: result.text, toolCalls: result.toolCalls });
       if (result.text) {
-        messages.push({ role: "assistant", content: result.text });
         trace.push({ type: "assistant_text", text: result.text });
       }
 

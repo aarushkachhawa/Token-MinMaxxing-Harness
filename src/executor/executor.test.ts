@@ -53,13 +53,38 @@ describe("Executor", () => {
       { type: "assistant_text", text: "the file says hello" },
     ]);
 
-    // the second call to the model must include the tool's result as a message
+    // the second call must include both the assistant's tool-call request AND its result --
+    // a tool-result with no preceding matching tool-call is invalid input to a real provider,
+    // and ScriptedModelClient alone won't catch that omission the way a real API does.
     const secondCallMessages = client.receivedOptions[1].messages;
+    expect(secondCallMessages).toContainEqual({
+      role: "assistant",
+      content: null,
+      toolCalls: [{ id: "call-1", toolName: "read_file", args: { path: "a.txt" } }],
+    });
     expect(secondCallMessages).toContainEqual({
       role: "tool",
       toolCallId: "call-1",
       toolName: "read_file",
       result: { contents: "contents of a.txt" },
+    });
+  });
+
+  it("records the assistant's tool-call request in history even when the turn included text too", async () => {
+    const readFile = fakeTool("read_file", async () => ({ contents: "hi" }));
+    const client = new ScriptedModelClient([
+      toolCallResult([{ id: "c1", toolName: "read_file", args: {} }], "let me check that file"),
+      textResult("done"),
+    ]);
+    const executor = new Executor(client, [readFile]);
+
+    await executor.run("system", "go");
+
+    const secondCallMessages = client.receivedOptions[1].messages;
+    expect(secondCallMessages).toContainEqual({
+      role: "assistant",
+      content: "let me check that file",
+      toolCalls: [{ id: "c1", toolName: "read_file", args: {} }],
     });
   });
 
