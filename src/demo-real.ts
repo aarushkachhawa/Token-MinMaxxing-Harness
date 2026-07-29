@@ -10,6 +10,7 @@
  */
 import { DEFAULT_CLASSIFICATION_RULES, ScriptedClassifierClient, TaskClassifier } from "./classifier/index.js";
 import { getAnthropicApiKey } from "./config/env.js";
+import { ContextCompiler, type SubtaskOutput } from "./context/index.js";
 import { AnthropicModelClient } from "./executor/anthropic-model-client.js";
 import { Executor } from "./executor/executor.js";
 import type { ModelClient, Tool } from "./executor/types.js";
@@ -26,9 +27,18 @@ async function runSubtask(
   classifier: TaskClassifier,
   rewardCollector: RewardCollector,
   modelClient: ModelClient,
-  tools: Tool[]
+  tools: Tool[],
+  contextCompiler: ContextCompiler,
+  outputs: Map<string, SubtaskOutput>
 ): Promise<void> {
   console.log(`--- Subtask "${subtask.id}": ${subtask.description} ---`);
+
+  // Compile just this subtask's own dependencies' outputs into its prompt -- not the full
+  // history of everything that ran before it.
+  const prompt = contextCompiler.compilePrompt(subtask, outputs);
+  if (subtask.dependsOn.length > 0) {
+    console.log(`Context from: ${subtask.dependsOn.join(", ")}`);
+  }
 
   // Classify — real heuristics, with a scripted LLM fallback for anything they don't cover.
   const classification = await classifier.classify(subtask.description);
@@ -54,8 +64,9 @@ async function runSubtask(
     "You are a careful coding assistant working in this project's repository. Use " +
       "list_directory to explore the project structure and read_file to see a file's contents " +
       "(both take paths relative to the project root) -- don't assume a file exists if you " +
-      "haven't found or read it. Be brief.",
-    subtask.description
+      "haven't found or read it. If prior work is provided below, treat it as established fact " +
+      "rather than re-investigating it. Be brief.",
+    prompt
   );
   console.log(`Executor finished ("${result.stopReason}"): "${result.finalText}"`);
   console.log(`Usage: ${JSON.stringify(result.usage)}`);
@@ -66,6 +77,11 @@ async function runSubtask(
 
   // Feed the reward back into the router — this is the loop that lets it learn over time.
   router.reportOutcome(classification.category, decision.modelId, breakdown.reward);
+  outputs.set(subtask.id, {
+    subtaskId: subtask.id,
+    description: subtask.description,
+    finalText: result.finalText,
+  });
   console.log("");
 }
 
@@ -106,11 +122,13 @@ async function main() {
   const rewardCollector = new RewardCollector();
   const modelClient = new AnthropicModelClient({ apiKey: getAnthropicApiKey() });
   const tools = [createReadFileTool(process.cwd()), createListDirectoryTool(process.cwd())];
+  const contextCompiler = new ContextCompiler();
+  const outputs = new Map<string, SubtaskOutput>();
 
   const completed = new Set<string>();
   while (!orchestrator.isComplete(plan, completed)) {
     for (const subtask of orchestrator.getReadySubtasks(plan, completed)) {
-      await runSubtask(subtask, bandit, classifier, rewardCollector, modelClient, tools);
+      await runSubtask(subtask, bandit, classifier, rewardCollector, modelClient, tools, contextCompiler, outputs);
       completed.add(subtask.id);
     }
   }
