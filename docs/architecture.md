@@ -92,7 +92,12 @@ tiers by trust:
 2. **Cheap proxy** (medium weight) — retry count, tool-call sanity, output schema validity.
 3. **Judge sampling** (low frequency, high cost) — periodically send output to a stronger model or
    the user for pass/fail, used to calibrate that (1) and (2) actually track real quality rather than
-   optimizing for "passed lint" while quality silently drifts.
+   optimizing for "passed lint" while quality silently drifts. Deliberately scoped to "did the trace
+   show the task getting done," never "is this code correct" — asking an LLM to eyeball code for bugs
+   without executing it produces confident, plausible-sounding false positives (that's tier 1's job,
+   and it's more reliable at it); see `src/reward/judge-rubric.ts` for the rubric and the incident that
+   shaped it. Every judge verdict must cite literal evidence from the trace, and low-confidence
+   verdicts are damped toward neutral rather than allowed to swing the reward on a guess.
 
 Each arm discounts its own accumulated evidence back toward its prior on every update (default
 decay 0.995, ~140-pull half-life), so a regression or improvement is reflected within a bounded

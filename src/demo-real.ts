@@ -15,6 +15,7 @@ import { AnthropicModelClient } from "./executor/anthropic-model-client.js";
 import { Executor } from "./executor/executor.js";
 import type { ModelClient, Tool } from "./executor/types.js";
 import { Orchestrator, ScriptedOrchestratorClient, type Subtask } from "./orchestrator/index.js";
+import { AnthropicJudgeClient } from "./reward/anthropic-judge-client.js";
 import { RewardCollector } from "./reward/reward-collector.js";
 import { Router } from "./router/bandit.js";
 import { ScriptedEscalationClient } from "./router/escalation.js";
@@ -119,7 +120,14 @@ async function main() {
     llmClient: new ScriptedClassifierClient(["test-authoring"]),
   });
   const bandit = new Router();
-  const rewardCollector = new RewardCollector();
+  // Judge tier fires on a small sample of subtasks (see DEFAULT_JUDGE_SAMPLE_RATE) -- most runs
+  // of this demo won't invoke it at all.
+  const rewardCollector = new RewardCollector({
+    judgeClient: new AnthropicJudgeClient({
+      apiKey: getAnthropicApiKey(),
+      onVerdict: (verdict) => console.log(`Judge verdict: ${verdict.score.toFixed(2)} (${verdict.confidence}) -- ${verdict.rationale}`),
+    }),
+  });
   const modelClient = new AnthropicModelClient({ apiKey: getAnthropicApiKey() });
   const tools = [createReadFileTool(process.cwd()), createListDirectoryTool(process.cwd())];
   const contextCompiler = new ContextCompiler();
