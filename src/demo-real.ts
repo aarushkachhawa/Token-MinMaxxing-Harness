@@ -1,8 +1,9 @@
 /**
  * Same pipeline as demo.ts, but the executor calls a real Anthropic model against the real,
- * sandboxed read_file tool instead of scripted/fake ones -- so both the model's answers and
- * its tool-calling decisions are genuine. Orchestrator decomposition, classifier fallback, and
- * escalation are still scripted; wiring those up to a real LLM is a separate, unscoped step.
+ * sandboxed read_file and list_directory tools instead of scripted/fake ones -- so both the
+ * model's answers and its tool-calling decisions are genuine. Orchestrator decomposition,
+ * classifier fallback, and escalation are still scripted; wiring those up to a real LLM is a
+ * separate, unscoped step.
  *
  * Spends real tokens on the key in .env every time it runs.
  * Usage: npm run demo:real-pipeline -- "your request description here"
@@ -17,7 +18,7 @@ import { RewardCollector } from "./reward/reward-collector.js";
 import { Router } from "./router/bandit.js";
 import { ScriptedEscalationClient } from "./router/escalation.js";
 import { HybridRouter } from "./router/hybrid-router.js";
-import { createReadFileTool } from "./tools/index.js";
+import { createListDirectoryTool, createReadFileTool } from "./tools/index.js";
 
 async function runSubtask(
   subtask: Subtask,
@@ -25,7 +26,7 @@ async function runSubtask(
   classifier: TaskClassifier,
   rewardCollector: RewardCollector,
   modelClient: ModelClient,
-  readFileTool: Tool
+  tools: Tool[]
 ): Promise<void> {
   console.log(`--- Subtask "${subtask.id}": ${subtask.description} ---`);
 
@@ -47,12 +48,13 @@ async function runSubtask(
   });
   console.log(`Routed to: "${decision.modelId}" (escalated: ${decision.escalated})`);
 
-  // Execute — real tool-use loop against a real model and the real, sandboxed read_file tool.
-  const executor = new Executor(modelClient, [readFileTool]);
+  // Execute — real tool-use loop against a real model and the real, sandboxed file tools.
+  const executor = new Executor(modelClient, tools);
   const result = await executor.run(
-    "You are a careful coding assistant working in this project's repository. Use the " +
-      "read_file tool (paths relative to the project root, e.g. README.md) if you need to see " +
-      "a file before answering -- don't assume a file exists if you haven't read it. Be brief.",
+    "You are a careful coding assistant working in this project's repository. Use " +
+      "list_directory to explore the project structure and read_file to see a file's contents " +
+      "(both take paths relative to the project root) -- don't assume a file exists if you " +
+      "haven't found or read it. Be brief.",
     subtask.description
   );
   console.log(`Executor finished ("${result.stopReason}"): "${result.finalText}"`);
@@ -103,12 +105,12 @@ async function main() {
   const bandit = new Router();
   const rewardCollector = new RewardCollector();
   const modelClient = new AnthropicModelClient({ apiKey: getAnthropicApiKey() });
-  const readFileTool = createReadFileTool(process.cwd());
+  const tools = [createReadFileTool(process.cwd()), createListDirectoryTool(process.cwd())];
 
   const completed = new Set<string>();
   while (!orchestrator.isComplete(plan, completed)) {
     for (const subtask of orchestrator.getReadySubtasks(plan, completed)) {
-      await runSubtask(subtask, bandit, classifier, rewardCollector, modelClient, readFileTool);
+      await runSubtask(subtask, bandit, classifier, rewardCollector, modelClient, tools);
       completed.add(subtask.id);
     }
   }
