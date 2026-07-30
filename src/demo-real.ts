@@ -12,79 +12,20 @@ import { DEFAULT_CLASSIFICATION_RULES, ScriptedClassifierClient, TaskClassifier 
 import { getAnthropicApiKey } from "./config/env.js";
 import { ContextCompiler, type SubtaskOutput } from "./context/index.js";
 import { AnthropicModelClient } from "./executor/anthropic-model-client.js";
-import { Executor } from "./executor/executor.js";
-import type { ModelClient, Tool } from "./executor/types.js";
-import { Orchestrator, ScriptedOrchestratorClient, type Subtask } from "./orchestrator/index.js";
+import { Orchestrator, ScriptedOrchestratorClient } from "./orchestrator/index.js";
 import { AnthropicJudgeClient } from "./reward/anthropic-judge-client.js";
 import { RewardCollector } from "./reward/reward-collector.js";
 import { Router } from "./router/bandit.js";
 import { ScriptedEscalationClient } from "./router/escalation.js";
-import { HybridRouter } from "./router/hybrid-router.js";
+import { SubtaskRunner } from "./runner/index.js";
 import { createListDirectoryTool, createReadFileTool } from "./tools/index.js";
 
-async function runSubtask(
-  subtask: Subtask,
-  bandit: Router,
-  classifier: TaskClassifier,
-  rewardCollector: RewardCollector,
-  modelClient: ModelClient,
-  tools: Tool[],
-  contextCompiler: ContextCompiler,
-  outputs: Map<string, SubtaskOutput>
-): Promise<void> {
-  console.log(`--- Subtask "${subtask.id}": ${subtask.description} ---`);
-
-  // Compile just this subtask's own dependencies' outputs into its prompt -- not the full
-  // history of everything that ran before it.
-  const prompt = contextCompiler.compilePrompt(subtask, outputs);
-  if (subtask.dependsOn.length > 0) {
-    console.log(`Context from: ${subtask.dependsOn.join(", ")}`);
-  }
-
-  // Classify — real heuristics, with a scripted LLM fallback for anything they don't cover.
-  const classification = await classifier.classify(subtask.description);
-  console.log(`Classified as: "${classification.category}" (via ${classification.source})`);
-
-  // Route — real Thompson-sampling bandit, shared across subtasks so learning persists
-  // between them; a scripted client stands in for LLM escalation.
-  if (bandit.getCandidates(classification.category).length === 0) {
-    bandit.register(classification.category, "fast-cheap", 0.01);
-    bandit.register(classification.category, "smart-expensive", 0.3);
-  }
-  const router = new HybridRouter(bandit, new ScriptedEscalationClient(["smart-expensive"]), {
-    minPullsBeforeConfident: 3,
-  });
-  const decision = await router.route(classification.category, subtask.description, {
-    forceEscalate: subtask.highRisk,
-  });
-  console.log(`Routed to: "${decision.modelId}" (escalated: ${decision.escalated})`);
-
-  // Execute — real tool-use loop against a real model and the real, sandboxed file tools.
-  const executor = new Executor(modelClient, tools);
-  const result = await executor.run(
-    "You are a careful coding assistant working in this project's repository. Use " +
-      "list_directory to explore the project structure and read_file to see a file's contents " +
-      "(both take paths relative to the project root) -- don't assume a file exists if you " +
-      "haven't found or read it. If prior work is provided below, treat it as established fact " +
-      "rather than re-investigating it. Be brief.",
-    prompt
-  );
-  console.log(`Executor finished ("${result.stopReason}"): "${result.finalText}"`);
-  console.log(`Usage: ${JSON.stringify(result.usage)}`);
-
-  // Grade — real proxy signals, computed from the executor's actual trace above.
-  const breakdown = await rewardCollector.score(subtask.description, result);
-  console.log(`Reward: ${breakdown.reward.toFixed(2)}`);
-
-  // Feed the reward back into the router — this is the loop that lets it learn over time.
-  router.reportOutcome(classification.category, decision.modelId, breakdown.reward);
-  outputs.set(subtask.id, {
-    subtaskId: subtask.id,
-    description: subtask.description,
-    finalText: result.finalText,
-  });
-  console.log("");
-}
+const SYSTEM_PROMPT =
+  "You are a careful coding assistant working in this project's repository. Use " +
+  "list_directory to explore the project structure and read_file to see a file's contents " +
+  "(both take paths relative to the project root) -- don't assume a file exists if you " +
+  "haven't found or read it. If prior work is provided below, treat it as established fact " +
+  "rather than re-investigating it. Be brief.";
 
 async function main() {
   const requestDescription =
@@ -125,7 +66,8 @@ async function main() {
   const rewardCollector = new RewardCollector({
     judgeClient: new AnthropicJudgeClient({
       apiKey: getAnthropicApiKey(),
-      onVerdict: (verdict) => console.log(`Judge verdict: ${verdict.score.toFixed(2)} (${verdict.confidence}) -- ${verdict.rationale}`),
+      onVerdict: (verdict) =>
+        console.log(`Judge verdict: ${verdict.score.toFixed(2)} (${verdict.confidence}) -- ${verdict.rationale}`),
     }),
   });
   const modelClient = new AnthropicModelClient({ apiKey: getAnthropicApiKey() });
@@ -133,10 +75,42 @@ async function main() {
   const contextCompiler = new ContextCompiler();
   const outputs = new Map<string, SubtaskOutput>();
 
+  const runner = new SubtaskRunner(
+    bandit,
+    classifier,
+    rewardCollector,
+    modelClient,
+    tools,
+    contextCompiler,
+    // each subtask can call escalation up to twice (cold-start on the first attempt, forced on
+    // a retry) -- a generous fixed buffer rather than sizing this exactly to the plan.
+    new ScriptedEscalationClient(Array(20).fill("smart-expensive")),
+    {
+      systemPrompt: SYSTEM_PROMPT,
+      hybridRouterOptions: { minPullsBeforeConfident: 3 },
+      onCategoryDiscovered: (category) => {
+        if (bandit.getCandidates(category).length === 0) {
+          bandit.register(category, "fast-cheap", 0.01);
+          bandit.register(category, "smart-expensive", 0.3);
+        }
+      },
+    }
+  );
+
   const completed = new Set<string>();
   while (!orchestrator.isComplete(plan, completed)) {
     for (const subtask of orchestrator.getReadySubtasks(plan, completed)) {
-      await runSubtask(subtask, bandit, classifier, rewardCollector, modelClient, tools, contextCompiler, outputs);
+      console.log(`--- Subtask "${subtask.id}": ${subtask.description} ---`);
+      if (subtask.dependsOn.length > 0) {
+        console.log(`Context from: ${subtask.dependsOn.join(", ")}`);
+      }
+
+      const { output, reward, escalatedAfterFailure } = await runner.run(subtask, outputs);
+
+      console.log(`Final: "${output.finalText}"`);
+      console.log(`Reward: ${reward.toFixed(2)}${escalatedAfterFailure ? " (after escalation retry)" : ""}\n`);
+
+      outputs.set(subtask.id, output);
       completed.add(subtask.id);
     }
   }
