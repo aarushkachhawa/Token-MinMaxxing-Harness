@@ -1,24 +1,21 @@
 /**
- * Same pipeline as demo.ts, but the executor calls a real Anthropic model against the real,
- * sandboxed read_file and list_directory tools instead of scripted/fake ones -- so both the
- * model's answers and its tool-calling decisions are genuine. Orchestrator decomposition is now
- * real too (triage -> conditional explore -> structure, see anthropic-orchestrator-client.ts).
- * Classifier fallback and escalation are still scripted.
+ * Same pipeline as demo.ts, but every LLM-backed decision point calls a real Anthropic model
+ * instead of a scripted one: decomposition (triage -> conditional explore -> structure),
+ * classifier fallback, escalation, execution against real read_file/list_directory tools, and
+ * judge sampling. Nothing left in this pipeline is a scripted stand-in.
  *
- * Spends real tokens on the key in .env every time it runs -- decomposition alone can now be
- * 1-3 real calls (triage always, explore only if triage says the request needs it, structure
- * always), on top of whatever the resulting subtasks cost to execute.
+ * Spends real tokens on the key in .env every time it runs.
  * Usage: npm run demo:real-pipeline -- "your request description here"
  */
-import { DEFAULT_CLASSIFICATION_RULES, ScriptedClassifierClient, TaskClassifier } from "./classifier/index.js";
+import { AnthropicClassifierClient, DEFAULT_CLASSIFICATION_RULES, TaskClassifier } from "./classifier/index.js";
 import { getAnthropicApiKey } from "./config/env.js";
 import { ContextCompiler, type SubtaskOutput } from "./context/index.js";
 import { AnthropicModelClient } from "./executor/anthropic-model-client.js";
 import { AnthropicOrchestratorClient, Orchestrator } from "./orchestrator/index.js";
 import { AnthropicJudgeClient } from "./reward/anthropic-judge-client.js";
 import { RewardCollector } from "./reward/reward-collector.js";
+import { AnthropicEscalationClient } from "./router/anthropic-escalation-client.js";
 import { Router } from "./router/bandit.js";
-import { ScriptedEscalationClient } from "./router/escalation.js";
 import { SubtaskRunner } from "./runner/index.js";
 import { createListDirectoryTool, createReadFileTool } from "./tools/index.js";
 
@@ -48,7 +45,7 @@ async function main() {
 
   const classifier = new TaskClassifier({
     rules: DEFAULT_CLASSIFICATION_RULES,
-    llmClient: new ScriptedClassifierClient(["test-authoring"]),
+    llmClient: new AnthropicClassifierClient({ apiKey: getAnthropicApiKey() }),
   });
   const bandit = new Router();
   // Judge tier fires on a small sample of subtasks (see DEFAULT_JUDGE_SAMPLE_RATE) -- most runs
@@ -72,9 +69,7 @@ async function main() {
     modelClient,
     tools,
     contextCompiler,
-    // each subtask can call escalation up to twice (cold-start on the first attempt, forced on
-    // a retry) -- a generous fixed buffer rather than sizing this exactly to the plan.
-    new ScriptedEscalationClient(Array(20).fill("smart-expensive")),
+    new AnthropicEscalationClient({ apiKey: getAnthropicApiKey() }),
     {
       systemPrompt: SYSTEM_PROMPT,
       hybridRouterOptions: { minPullsBeforeConfident: 3 },
