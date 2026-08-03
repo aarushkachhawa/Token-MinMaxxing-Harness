@@ -1,18 +1,20 @@
 /**
  * Same pipeline as demo.ts, but the executor calls a real Anthropic model against the real,
  * sandboxed read_file and list_directory tools instead of scripted/fake ones -- so both the
- * model's answers and its tool-calling decisions are genuine. Orchestrator decomposition,
- * classifier fallback, and escalation are still scripted; wiring those up to a real LLM is a
- * separate, unscoped step.
+ * model's answers and its tool-calling decisions are genuine. Orchestrator decomposition is now
+ * real too (triage -> conditional explore -> structure, see anthropic-orchestrator-client.ts).
+ * Classifier fallback and escalation are still scripted.
  *
- * Spends real tokens on the key in .env every time it runs.
+ * Spends real tokens on the key in .env every time it runs -- decomposition alone can now be
+ * 1-3 real calls (triage always, explore only if triage says the request needs it, structure
+ * always), on top of whatever the resulting subtasks cost to execute.
  * Usage: npm run demo:real-pipeline -- "your request description here"
  */
 import { DEFAULT_CLASSIFICATION_RULES, ScriptedClassifierClient, TaskClassifier } from "./classifier/index.js";
 import { getAnthropicApiKey } from "./config/env.js";
 import { ContextCompiler, type SubtaskOutput } from "./context/index.js";
 import { AnthropicModelClient } from "./executor/anthropic-model-client.js";
-import { Orchestrator, ScriptedOrchestratorClient } from "./orchestrator/index.js";
+import { AnthropicOrchestratorClient, Orchestrator } from "./orchestrator/index.js";
 import { AnthropicJudgeClient } from "./reward/anthropic-judge-client.js";
 import { RewardCollector } from "./reward/reward-collector.js";
 import { Router } from "./router/bandit.js";
@@ -28,30 +30,18 @@ const SYSTEM_PROMPT =
   "rather than re-investigating it. Be brief.";
 
 async function main() {
-  const requestDescription =
-    process.argv[2] ?? "fix the off-by-one bug in the loop and add a regression test";
+  const requestDescription = process.argv[2] ?? "explain what the ContextCompiler does";
   console.log(`\nRequest: "${requestDescription}"`);
 
-  // Decompose into a subtask plan — still scripted, since real decomposition is unscoped.
-  const orchestratorClient = new ScriptedOrchestratorClient([
-    {
-      subtasks: [
-        { id: "investigate", description: "find where the off-by-one bug is", dependsOn: [], highRisk: false },
-        {
-          id: "fix",
-          description: "fix the off-by-one bug in the loop",
-          dependsOn: ["investigate"],
-          highRisk: false,
-        },
-        {
-          id: "test",
-          description: "write a unit test for the fix",
-          dependsOn: ["fix"],
-          highRisk: false,
-        },
-      ],
-    },
-  ]);
+  // Decompose into a subtask plan — real now: triage decides if repo context is even needed,
+  // explore gathers it only if so, structure turns the (possibly grounded) request into a plan.
+  const orchestratorClient = new AnthropicOrchestratorClient({
+    apiKey: getAnthropicApiKey(),
+    workspaceRoot: process.cwd(),
+    onTriage: (triage) =>
+      console.log(`Triage: needsExploration=${triage.needsExploration} -- ${triage.reasoning}`),
+    onExploration: (summary) => console.log(`Exploration summary: ${summary}`),
+  });
   const orchestrator = new Orchestrator(orchestratorClient);
   const plan = await orchestrator.plan(requestDescription);
   console.log(`Plan: ${plan.subtasks.map((s) => s.id).join(" -> ")}\n`);

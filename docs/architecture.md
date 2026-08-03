@@ -13,6 +13,14 @@ correctly at the lowest cost, learning that assignment over time instead of hard
    lightweight risk/tier hint per subtask alongside the decomposition, piggybacked on the read it was
    already doing — this is the harness's only per-subtask LLM judgment, and it's free in the sense
    that the orchestrator was going to look at the task anyway.
+
+   Decomposition itself is three phases: **triage** (cheap, no tools — decides whether the request
+   even needs repo context, so "what is 1+1" never pays for exploration), **explore** (only if triage
+   says so — reuses the same tool-use loop and read-only tools as any subtask, so the plan is grounded
+   in real files instead of guessing at structure), then **structure** (turns the request, plus any
+   exploration summary, into a validated subtask DAG). All DAG validation — cycles, unknown/self
+   dependencies, duplicate ids — happens after the client returns a plan, not inside it; an invalid
+   plan currently just fails rather than being repaired and retried.
 2. **Task classifier** — labels each subtask against a configurable category taxonomy (e.g.
    `trivial-lookup`, `small-edit`, `multi-file-refactor`, `test-authoring`, `exploration`). Cheap
    heuristics first, LLM fallback only when ambiguous, so classification itself doesn't burn budget.
@@ -132,3 +140,7 @@ Anthropic) is a registry entry, not new routing code.
 - **`read_file` has no offset/limit**: v1 reads the whole file (up to a ~100KB truncation cap) rather
   than supporting a line-range read. Revisit if truncation on large files turns out to bite in
   practice — offset/limit would let a worker ask for a specific slice instead of just the head.
+- **`write_file` (and any shell/command tool) not built yet**: meaningfully higher risk than the
+  two read-only tools (`read_file`, `list_directory`) — real side effects instead of just reads.
+  Needs its own safety design before implementation: approval-gating, a dry-run diff preview,
+  and/or an allowed-directories model, not just the read-only containment check reused as-is.
