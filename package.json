@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "demo": "tsx src/demo.ts",
     "demo:real": "tsx --env-file=.env src/live-check.ts",
-    "demo:real-pipeline": "tsx --env-file=.env src/demo-real.ts"
+    "demo:real-pipeline": "tsx --env-file=.env src/demo-real.ts",
+    "stress": "tsx --env-file=.env src/stress-test.ts"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

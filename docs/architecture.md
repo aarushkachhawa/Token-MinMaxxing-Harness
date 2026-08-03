@@ -13,6 +13,14 @@ correctly at the lowest cost, learning that assignment over time instead of hard
    lightweight risk/tier hint per subtask alongside the decomposition, piggybacked on the read it was
    already doing — this is the harness's only per-subtask LLM judgment, and it's free in the sense
    that the orchestrator was going to look at the task anyway.
+
+   Decomposition itself is three phases: **triage** (cheap, no tools — decides whether the request
+   even needs repo context, so "what is 1+1" never pays for exploration), **explore** (only if triage
+   says so — reuses the same tool-use loop and read-only tools as any subtask, so the plan is grounded
+   in real files instead of guessing at structure), then **structure** (turns the request, plus any
+   exploration summary, into a validated subtask DAG). All DAG validation — cycles, unknown/self
+   dependencies, duplicate ids — happens after the client returns a plan, not inside it; an invalid
+   plan currently just fails rather than being repaired and retried.
 2. **Task classifier** — labels each subtask against a configurable category taxonomy (e.g.
    `trivial-lookup`, `small-edit`, `multi-file-refactor`, `test-authoring`, `exploration`). Cheap
    heuristics first, LLM fallback only when ambiguous, so classification itself doesn't burn budget.
@@ -92,7 +100,12 @@ tiers by trust:
 2. **Cheap proxy** (medium weight) — retry count, tool-call sanity, output schema validity.
 3. **Judge sampling** (low frequency, high cost) — periodically send output to a stronger model or
    the user for pass/fail, used to calibrate that (1) and (2) actually track real quality rather than
-   optimizing for "passed lint" while quality silently drifts.
+   optimizing for "passed lint" while quality silently drifts. Deliberately scoped to "did the trace
+   show the task getting done," never "is this code correct" — asking an LLM to eyeball code for bugs
+   without executing it produces confident, plausible-sounding false positives (that's tier 1's job,
+   and it's more reliable at it); see `src/reward/judge-rubric.ts` for the rubric and the incident that
+   shaped it. Every judge verdict must cite literal evidence from the trace, and low-confidence
+   verdicts are damped toward neutral rather than allowed to swing the reward on a guess.
 
 Each arm discounts its own accumulated evidence back toward its prior on every update (default
 decay 0.995, ~140-pull half-life), so a regression or improvement is reflected within a bounded
@@ -127,3 +140,7 @@ Anthropic) is a registry entry, not new routing code.
 - **`read_file` has no offset/limit**: v1 reads the whole file (up to a ~100KB truncation cap) rather
   than supporting a line-range read. Revisit if truncation on large files turns out to bite in
   practice — offset/limit would let a worker ask for a specific slice instead of just the head.
+- **`write_file` (and any shell/command tool) not built yet**: meaningfully higher risk than the
+  two read-only tools (`read_file`, `list_directory`) — real side effects instead of just reads.
+  Needs its own safety design before implementation: approval-gating, a dry-run diff preview,
+  and/or an allowed-directories model, not just the read-only containment check reused as-is.
