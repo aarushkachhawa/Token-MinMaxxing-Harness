@@ -1,3 +1,7 @@
+export {
+  AnthropicEscalationClient,
+  type AnthropicEscalationClientOptions,
+} from "./anthropic-escalation-client.js";
 export { Arm, CategoryRouter, DEFAULT_DECAY, Router, type CandidateStats } from "./bandit.js";
 export { sampleBeta } from "./beta.js";
 export {

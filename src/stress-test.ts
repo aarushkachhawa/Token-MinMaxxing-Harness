@@ -6,14 +6,14 @@
  * Spends real tokens every time it runs.
  * Usage: npm run stress -- "your task description" [--always-judge]
  */
-import { DEFAULT_CLASSIFICATION_RULES, ScriptedClassifierClient, TaskClassifier } from "./classifier/index.js";
+import { AnthropicClassifierClient, DEFAULT_CLASSIFICATION_RULES, TaskClassifier } from "./classifier/index.js";
 import { getAnthropicApiKey } from "./config/env.js";
 import { ContextCompiler } from "./context/index.js";
 import { AnthropicModelClient } from "./executor/anthropic-model-client.js";
 import { AnthropicJudgeClient } from "./reward/anthropic-judge-client.js";
 import { RewardCollector } from "./reward/reward-collector.js";
+import { AnthropicEscalationClient } from "./router/anthropic-escalation-client.js";
 import { Router } from "./router/bandit.js";
-import { ScriptedEscalationClient } from "./router/escalation.js";
 import { SubtaskRunner } from "./runner/index.js";
 import { createListDirectoryTool, createReadFileTool } from "./tools/index.js";
 
@@ -33,7 +33,7 @@ async function main() {
 
   const classifier = new TaskClassifier({
     rules: DEFAULT_CLASSIFICATION_RULES,
-    llmClient: new ScriptedClassifierClient(["exploration"]),
+    llmClient: new AnthropicClassifierClient({ apiKey: getAnthropicApiKey() }),
   });
   const bandit = new Router();
   const rewardCollector = new RewardCollector({
@@ -57,7 +57,7 @@ async function main() {
     modelClient,
     tools,
     contextCompiler,
-    new ScriptedEscalationClient(Array(10).fill("smart-expensive")),
+    new AnthropicEscalationClient({ apiKey: getAnthropicApiKey() }),
     {
       systemPrompt: SYSTEM_PROMPT,
       hybridRouterOptions: { minPullsBeforeConfident: 3 },
