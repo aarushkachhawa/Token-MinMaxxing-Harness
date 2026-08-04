@@ -13,6 +13,19 @@ export interface CandidateStats {
   pulls: number;
 }
 
+/** Full persistable state of one arm -- everything needed to reconstruct it exactly, not just
+ * the summary stats CandidateStats exposes. See src/persistence/ for what saves/loads this. */
+export interface ArmState {
+  category: string;
+  modelId: string;
+  cost: number;
+  priorAlpha: number;
+  priorBeta: number;
+  alpha: number;
+  beta: number;
+  decay: number;
+}
+
 /** One candidate model within a task category. */
 export class Arm {
   modelId: string;
@@ -205,5 +218,38 @@ export class Router {
   /** Current stats for every candidate in a category; empty if the category is unknown. */
   getCandidates(category: string): CandidateStats[] {
     return this.categories.get(category)?.getCandidates() ?? [];
+  }
+
+  /** Full state of every arm across every category, for persistence. */
+  getAllArms(): ArmState[] {
+    const result: ArmState[] = [];
+    for (const [category, categoryRouter] of this.categories) {
+      for (const arm of categoryRouter.arms.values()) {
+        result.push({
+          category,
+          modelId: arm.modelId,
+          cost: arm.cost,
+          priorAlpha: arm.priorAlpha,
+          priorBeta: arm.priorBeta,
+          alpha: arm.alpha,
+          beta: arm.beta,
+          decay: arm.decay,
+        });
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Restore an arm to an exact previously-saved state, including its learned alpha/beta --
+   * unlike register()/resetArm(), which always start an arm fresh at its prior. Used to load
+   * persisted state back in, not part of the normal routing/registration flow.
+   */
+  restoreArm(state: ArmState): void {
+    const categoryRouter = this.getOrCreateCategory(state.category);
+    const arm = new Arm(state.modelId, state.cost, state.priorAlpha, state.priorBeta, state.decay);
+    arm.alpha = state.alpha;
+    arm.beta = state.beta;
+    categoryRouter.arms.set(state.modelId, arm);
   }
 }

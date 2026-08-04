@@ -7,17 +7,20 @@
  * Spends real tokens on the key in .env every time it runs.
  * Usage: npm run demo:real-pipeline -- "your request description here"
  */
+import { join } from "node:path";
 import { AnthropicClassifierClient, DEFAULT_CLASSIFICATION_RULES, TaskClassifier } from "./classifier/index.js";
 import { getAnthropicApiKey } from "./config/env.js";
 import { ContextCompiler, type SubtaskOutput } from "./context/index.js";
 import { AnthropicModelClient } from "./executor/anthropic-model-client.js";
 import { AnthropicOrchestratorClient, Orchestrator } from "./orchestrator/index.js";
+import { loadRouterState, saveRouterState, SqliteRouterStore } from "./persistence/index.js";
 import { AnthropicJudgeClient } from "./reward/anthropic-judge-client.js";
 import { RewardCollector } from "./reward/reward-collector.js";
 import { AnthropicEscalationClient } from "./router/anthropic-escalation-client.js";
-import { Router } from "./router/bandit.js";
 import { SubtaskRunner } from "./runner/index.js";
 import { createListDirectoryTool, createReadFileTool } from "./tools/index.js";
+
+const ROUTER_STATE_PATH = join(process.cwd(), "router-state.sqlite");
 
 const SYSTEM_PROMPT =
   "You are a careful coding assistant working in this project's repository. Use " +
@@ -47,7 +50,10 @@ async function main() {
     rules: DEFAULT_CLASSIFICATION_RULES,
     llmClient: new AnthropicClassifierClient({ apiKey: getAnthropicApiKey() }),
   });
-  const bandit = new Router();
+  // Router state persists across runs in a SQLite file at the repo root -- this run picks up
+  // wherever the last one left off instead of starting the bandit from scratch every time.
+  const routerStore = new SqliteRouterStore(ROUTER_STATE_PATH);
+  const bandit = loadRouterState(routerStore);
   // Judge tier fires on a small sample of subtasks (see DEFAULT_JUDGE_SAMPLE_RATE) -- most runs
   // of this demo won't invoke it at all.
   const rewardCollector = new RewardCollector({
@@ -97,9 +103,13 @@ async function main() {
 
       outputs.set(subtask.id, output);
       completed.add(subtask.id);
+      // save after every subtask, not just at the end -- a crash mid-run shouldn't lose what
+      // was already learned from the subtasks that did complete.
+      saveRouterState(bandit, routerStore);
     }
   }
 
+  routerStore.close();
   console.log("All subtasks complete.\n");
 }
 
