@@ -77,6 +77,12 @@ every config reload) refreshes its cost but leaves learned `alpha`/`beta` untouc
 discarding history (e.g. after a known model version swap) goes through a separate `resetArm()`
 call, so a routine config reload can never silently erase weeks of learned routing behavior.
 
+Learned state persists across runs (`src/persistence/`) — `getAllArms()`/`restoreArm()` snapshot and
+restore full arm state (not just the summary stats `getCandidates()` exposes) to/from SQLite via
+Node's built-in `node:sqlite` (no dependency needed, though it's a Node-experimental API as of this
+writing). The router itself stays storage-agnostic; persistence is a separate layer built on top,
+not baked into `Router`/`Arm`.
+
 ### LLM escalation
 
 Invoked only when the bandit's sampled arms are still highly uncertain (new/low-traffic category)

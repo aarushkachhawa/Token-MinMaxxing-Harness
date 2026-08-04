@@ -58,6 +58,111 @@ describe("Router", () => {
     expect(arm.beta).toBe(1);
   });
 
+  it("getAllArms() returns full state for every arm across every category", () => {
+    const router = new Router();
+    router.register("small-edit", "cheap", 0.01, 2, 1, 1);
+    router.register("small-edit", "strong", 0.3, 2, 1, 1);
+    router.register("exploration", "cheap", 0.02, 2, 1, 1);
+    router.reportOutcome("small-edit", "cheap", 0.7);
+
+    const all = router.getAllArms();
+
+    expect(all).toHaveLength(3);
+    expect(all).toContainEqual({
+      category: "small-edit",
+      modelId: "cheap",
+      cost: 0.01,
+      priorAlpha: 2,
+      priorBeta: 1,
+      alpha: 2.7,
+      beta: 1.3,
+      decay: 1,
+    });
+    expect(all).toContainEqual({
+      category: "small-edit",
+      modelId: "strong",
+      cost: 0.3,
+      priorAlpha: 2,
+      priorBeta: 1,
+      alpha: 2,
+      beta: 1,
+      decay: 1,
+    });
+    expect(all).toContainEqual({
+      category: "exploration",
+      modelId: "cheap",
+      cost: 0.02,
+      priorAlpha: 2,
+      priorBeta: 1,
+      alpha: 2,
+      beta: 1,
+      decay: 1,
+    });
+  });
+
+  it("getAllArms() returns an empty array for a router with nothing registered", () => {
+    expect(new Router().getAllArms()).toEqual([]);
+  });
+
+  it("restoreArm() sets alpha/beta directly, unlike register()/resetArm() which reset to the prior", () => {
+    const router = new Router();
+
+    router.restoreArm({
+      category: "small-edit",
+      modelId: "cheap",
+      cost: 0.01,
+      priorAlpha: 2,
+      priorBeta: 1,
+      alpha: 40,
+      beta: 5,
+      decay: 0.995,
+    });
+
+    const arm = router.getArm("small-edit", "cheap")!;
+    expect(arm.alpha).toBe(40);
+    expect(arm.beta).toBe(5);
+    expect(arm.priorAlpha).toBe(2);
+    expect(arm.priorBeta).toBe(1);
+  });
+
+  it("a restored arm keeps learning normally afterward (decay applies from the restored values)", () => {
+    const router = new Router();
+    router.restoreArm({
+      category: "small-edit",
+      modelId: "cheap",
+      cost: 0.01,
+      priorAlpha: 2,
+      priorBeta: 1,
+      alpha: 40,
+      beta: 5,
+      decay: 1, // no decay, exact arithmetic
+    });
+
+    router.reportOutcome("small-edit", "cheap", 1);
+
+    const arm = router.getArm("small-edit", "cheap")!;
+    expect(arm.alpha).toBe(41); // 40 + reward(1), decay=1 so no discount toward the prior
+    expect(arm.beta).toBe(5); // 5 + (1 - reward)
+  });
+
+  it("round-trips through getAllArms() -> restoreArm() with no change in behavior", () => {
+    const original = new Router(new SeededRng(42));
+    original.register("small-edit", "cheap", 0.01);
+    original.register("small-edit", "strong", 0.3);
+    for (let i = 0; i < 50; i++) {
+      original.reportOutcome("small-edit", "strong", 0.9);
+      original.reportOutcome("small-edit", "cheap", 0.4);
+    }
+
+    const restored = new Router(new SeededRng(1));
+    for (const state of original.getAllArms()) {
+      restored.restoreArm(state);
+    }
+
+    expect(restored.getArm("small-edit", "cheap")).toEqual(original.getArm("small-edit", "cheap"));
+    expect(restored.getArm("small-edit", "strong")).toEqual(original.getArm("small-edit", "strong"));
+  });
+
   it("accepts fractional rewards for blended success signals", () => {
     const router = new Router();
     router.register("small-edit", "cheap", 0.01, 2, 1, 1);
