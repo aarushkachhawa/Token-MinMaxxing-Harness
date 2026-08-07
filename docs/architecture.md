@@ -146,7 +146,10 @@ Anthropic) is a registry entry, not new routing code.
 - **`read_file` has no offset/limit**: v1 reads the whole file (up to a ~100KB truncation cap) rather
   than supporting a line-range read. Revisit if truncation on large files turns out to bite in
   practice — offset/limit would let a worker ask for a specific slice instead of just the head.
-- **`write_file` (and any shell/command tool) not built yet**: meaningfully higher risk than the
-  two read-only tools (`read_file`, `list_directory`) — real side effects instead of just reads.
-  Needs its own safety design before implementation: approval-gating, a dry-run diff preview,
-  and/or an allowed-directories model, not just the read-only containment check reused as-is.
+- **`write_file` has no auto-created parent directories**: the parent directory must already
+  exist, matching `read_file`'s "reject rather than guess" posture — a model that got the path
+  wrong gets a clear error instead of an unexpected new directory tree. Revisit if this proves
+  too restrictive in practice; would be an opt-in flag, not a default.
+- **`delete_file` and any shell/command tool are not built**: `write_file`'s denylist/containment/
+  approval-hook pattern is the template if/when a delete tool is added, but deletion and arbitrary
+  command execution are their own risk categories, not just "write_file but more so."
