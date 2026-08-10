@@ -92,6 +92,10 @@ async function main() {
     new AnthropicEscalationClient({ apiKey: getAnthropicApiKey() }),
     {
       systemPrompt: SYSTEM_PROMPT,
+      // A subtask that needs to explore the repo before it can act (find + read a few files,
+      // then answer or write) can easily need more than the Executor default of 10 turns -- see
+      // DEFAULT_EXPLORE_MAX_TURNS in anthropic-orchestrator-client.ts for the same tradeoff.
+      executorMaxTurns: 15,
       hybridRouterOptions: { minPullsBeforeConfident: 3 },
       onCategoryDiscovered: (category) => {
         if (bandit.getCandidates(category).length === 0) {
