@@ -150,6 +150,14 @@ Anthropic) is a registry entry, not new routing code.
   exist, matching `read_file`'s "reject rather than guess" posture — a model that got the path
   wrong gets a clear error instead of an unexpected new directory tree. Revisit if this proves
   too restrictive in practice; would be an opt-in flag, not a default.
+- **`write_file` against the real repo is now gated, not just sandboxed**: `demo-real.ts` and
+  `stress-test.ts` both wire it up scoped to `process.cwd()` (the actual project, not a scratch
+  dir) with `onBeforeWrite` set to `interactiveWriteApprovalGate`
+  (`src/tools/write-approval-gate.ts`) — every pending write prints the path, whether it's a new
+  file or an overwrite, and the full before/after content to the terminal, then blocks on stdin
+  for an explicit y/yes, defaulting to refuse on anything else. This is a human-in-the-loop gate
+  sized for interactive demo/stress runs; an unattended real-repo run would need a different one
+  (allowlist rules, diff-size limits) since there's no human to answer the prompt.
 - **`delete_file` and any shell/command tool are not built**: `write_file`'s denylist/containment/
   approval-hook pattern is the template if/when a delete tool is added, but deletion and arbitrary
   command execution are their own risk categories, not just "write_file but more so."

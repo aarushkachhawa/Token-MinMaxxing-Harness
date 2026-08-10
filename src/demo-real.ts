@@ -18,7 +18,12 @@ import { AnthropicJudgeClient } from "./reward/anthropic-judge-client.js";
 import { RewardCollector } from "./reward/reward-collector.js";
 import { AnthropicEscalationClient } from "./router/anthropic-escalation-client.js";
 import { SubtaskRunner } from "./runner/index.js";
-import { createListDirectoryTool, createReadFileTool } from "./tools/index.js";
+import {
+  createListDirectoryTool,
+  createReadFileTool,
+  createWriteFileTool,
+  interactiveWriteApprovalGate,
+} from "./tools/index.js";
 
 const ROUTER_STATE_PATH = join(process.cwd(), "router-state.sqlite");
 
@@ -26,8 +31,10 @@ const SYSTEM_PROMPT =
   "You are a careful coding assistant working in this project's repository. Use " +
   "list_directory to explore the project structure and read_file to see a file's contents " +
   "(both take paths relative to the project root) -- don't assume a file exists if you " +
-  "haven't found or read it. If prior work is provided below, treat it as established fact " +
-  "rather than re-investigating it. Be brief.";
+  "haven't found or read it. write_file is available to create or overwrite files, but every " +
+  "write requires explicit human approval before it takes effect, so don't be surprised if a " +
+  "write is rejected. If prior work is provided below, treat it as established fact rather " +
+  "than re-investigating it. Be brief.";
 
 async function main() {
   const requestDescription = process.argv[2] ?? "explain what the ContextCompiler does";
@@ -64,7 +71,14 @@ async function main() {
     }),
   });
   const modelClient = new AnthropicModelClient({ apiKey: getAnthropicApiKey() });
-  const tools = [createReadFileTool(process.cwd()), createListDirectoryTool(process.cwd())];
+  // write_file here is scoped to this actual repository (not a scratch dir like
+  // write-file-check.ts), so every write is gated on an interactive terminal approval that
+  // prints the before/after content and defaults to refusing -- see write-approval-gate.ts.
+  const tools = [
+    createReadFileTool(process.cwd()),
+    createListDirectoryTool(process.cwd()),
+    createWriteFileTool(process.cwd(), { onBeforeWrite: interactiveWriteApprovalGate }),
+  ];
   const contextCompiler = new ContextCompiler();
   const outputs = new Map<string, SubtaskOutput>();
 
