@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Agentic coding harness that min-maxes token spend with a custom model router",
   "type": "module",
+  "bin": {
+    "tmh": "./dist/cli.js"
+  },
   "scripts": {
     "test": "vitest run",
     "build": "tsc -p tsconfig.json",
@@ -11,7 +14,8 @@
     "demo:real": "tsx --env-file=.env src/live-check.ts",
     "demo:real-pipeline": "tsx --env-file=.env src/demo-real.ts",
     "stress": "tsx --env-file=.env src/stress-test.ts",
-    "write-check": "tsx --env-file=.env src/write-file-check.ts"
+    "write-check": "tsx --env-file=.env src/write-file-check.ts",
+    "cli": "tsx --env-file=.env src/cli.ts"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

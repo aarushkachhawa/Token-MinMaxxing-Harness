@@ -23,7 +23,10 @@ export interface AnthropicOrchestratorClientOptions {
 }
 
 const DEFAULT_MODEL_ID = "claude-sonnet-5";
-const DEFAULT_EXPLORE_MAX_TURNS = 6;
+// Deliberately generous: light exploration (list a couple directories, read 2-3 files) alone
+// can use 6-8 turns, and a tighter budget silently discards the whole exploration as an empty
+// summary once turns run out with no turn left free to write it.
+const DEFAULT_EXPLORE_MAX_TURNS = 10;
 /** Cap on how much of a completed subtask's finalText gets fed into the replan prompt. */
 const MAX_COMPLETED_OUTPUT_SUMMARY_LENGTH = 500;
 
