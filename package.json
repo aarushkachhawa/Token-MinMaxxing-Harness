@@ -10,7 +10,8 @@
     "demo": "tsx src/demo.ts",
     "demo:real": "tsx --env-file=.env src/live-check.ts",
     "demo:real-pipeline": "tsx --env-file=.env src/demo-real.ts",
-    "stress": "tsx --env-file=.env src/stress-test.ts"
+    "stress": "tsx --env-file=.env src/stress-test.ts",
+    "write-check": "tsx --env-file=.env src/write-file-check.ts"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
