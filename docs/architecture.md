@@ -33,6 +33,13 @@ correctly at the lowest cost, learning that assignment over time instead of hard
    duplicate-id/unknown-or-self-dependency/cycle checks as the initial plan, just run against the
    merged subtask list) and merged into the tracked plan, which can unlock a further round of ready
    subtasks and another replan once those finish too.
+
+   In a multi-turn session (`src/cli.ts`), decomposition also sees the session's prior turns
+   (request + answer, most recent last), so triage/explore/structure can resolve a follow-up's
+   vague references ("that file", "now do the same for the other one") into something concrete.
+   This is the only place conversation history is used — it's resolved into a self-contained
+   subtask description during structure, so a worker executing a subtask never sees the history
+   itself, matching the context compiler's "narrow, not everything" philosophy below.
 2. **Task classifier** — labels each subtask against a configurable category taxonomy (e.g.
    `trivial-lookup`, `small-edit`, `multi-file-refactor`, `test-authoring`, `exploration`). Cheap
    heuristics first, LLM fallback only when ambiguous, so classification itself doesn't burn budget.

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { AnthropicModelClient } from "../executor/anthropic-model-client.js";
 import { Executor } from "../executor/executor.js";
 import { createListDirectoryTool, createReadFileTool } from "../tools/index.js";
-import type { OrchestratorClient, OrchestratorRequest, ReplanContext, SubtaskPlan } from "./types.js";
+import type { ConversationTurn, OrchestratorClient, OrchestratorRequest, ReplanContext, SubtaskPlan } from "./types.js";
 
 export interface TriageResult {
   needsExploration: boolean;
@@ -29,6 +29,10 @@ const DEFAULT_MODEL_ID = "claude-sonnet-5";
 const DEFAULT_EXPLORE_MAX_TURNS = 10;
 /** Cap on how much of a completed subtask's finalText gets fed into the replan prompt. */
 const MAX_COMPLETED_OUTPUT_SUMMARY_LENGTH = 500;
+/** Cap on how many prior turns of conversation history get fed into triage/explore/structure. */
+const MAX_HISTORY_TURNS = 5;
+/** Cap on how much of each prior turn's answer gets included -- a full history transcript would grow unboundedly. */
+const MAX_HISTORY_ANSWER_LENGTH = 500;
 
 const triageSchema = z.object({
   needsExploration: z.boolean(),
@@ -57,14 +61,21 @@ Set needsExploration=true only when the request clearly depends on repo-specific
 didn't already provide (e.g. "fix the bug in the auth module", "what does this project's reward \
 system do", "add a test next to the existing ones"). Set it false for requests that are fully \
 self-contained regardless of any codebase (e.g. "what is 1+1", "explain what Thompson sampling is", \
-"write a haiku about autumn") -- these should be planned directly with zero repo exploration.`;
+"write a haiku about autumn") -- these should be planned directly with zero repo exploration.
+
+If prior conversation turns are provided, use them only to understand what the new request refers \
+to (e.g. "that file", "it", "now do the same for the other one") -- they are context for reading the \
+new request, not additional requests to act on themselves.`;
 
 const EXPLORE_SYSTEM_PROMPT = `You are the exploration phase of a coding harness's orchestrator, \
 working in this project's repository. Use list_directory and read_file (paths relative to the \
 project root) only as much as needed to understand what's involved in accomplishing the request \
 below. Do not attempt to solve the request itself -- your job is only to gather and report relevant \
 context (relevant files, their purpose, anything a planner would need to know). Be concise. Finish \
-with a clear summary of what you found.`;
+with a clear summary of what you found.
+
+If prior conversation turns are provided, use them to figure out what a vague reference in the \
+request points at (e.g. which file "that" means), not as something to re-explore or re-explain.`;
 
 const STRUCTURE_SYSTEM_PROMPT = `You are the planning step of a coding harness's orchestrator. Break \
 the request into a small number of concrete, actionable subtasks that together accomplish it.
@@ -80,7 +91,12 @@ configuration
 Keep the plan as small as the request actually calls for -- a simple, self-contained request should \
 produce exactly one subtask, not be padded into an artificial multi-step plan. If context from \
 exploring the repository is provided below, ground your subtasks in the real files/structure it \
-describes rather than guessing.`;
+describes rather than guessing.
+
+If prior conversation turns are provided, resolve any vague reference in the request (e.g. "that \
+file", "it", "the other one") into something concrete using them, so each subtask description stays \
+self-contained on its own -- a worker sees only the subtask description, never the conversation \
+history itself.`;
 
 const REPLAN_SYSTEM_PROMPT = `You are the replanning step of a coding harness's orchestrator, invoked \
 after a batch of subtasks has finished running. You'll be given the original request, the subtasks \
@@ -115,6 +131,12 @@ configuration`;
  *    into a SubtaskPlan. Orchestrator.plan() still does all DAG validation on the result; this
  *    client doesn't repair an invalid plan, it just produces one.
  *
+ * All three phases also see request.conversationHistory (if non-empty), formatted as a prefix by
+ * formatConversationHistory(). This is where multi-turn memory actually lives: earlier turns are
+ * used to resolve a follow-up's vague references ("that file", "now do the same for the other
+ * one") into concrete subtask descriptions during structure -- a worker executing a subtask never
+ * sees the conversation history itself, only the already-resolved description.
+ *
  * replan() is a separate, single generateObject call used after a batch of subtasks has
  * completed: given the original request, the subtasks already known, and what's actually been
  * produced, it decides whether more subtasks are needed and returns just the new ones (or none).
@@ -143,16 +165,18 @@ export class AnthropicOrchestratorClient implements OrchestratorClient {
   }
 
   async decompose(request: OrchestratorRequest): Promise<SubtaskPlan> {
-    const triage = await this.triage(request.requestDescription);
+    const historyText = formatConversationHistory(request.conversationHistory ?? []);
+
+    const triage = await this.triage(request.requestDescription, historyText);
     this.onTriage?.(triage);
 
     let context: string | undefined;
     if (triage.needsExploration) {
-      context = await this.explore(request.requestDescription);
+      context = await this.explore(request.requestDescription, historyText);
       this.onExploration?.(context);
     }
 
-    return this.structure(request.requestDescription, context);
+    return this.structure(request.requestDescription, context, historyText);
   }
 
   async replan(context: ReplanContext): Promise<SubtaskPlan> {
@@ -192,27 +216,31 @@ the new subtasks needed, or an empty list if none are needed.`;
     return object;
   }
 
-  private async triage(requestDescription: string): Promise<TriageResult> {
+  private async triage(requestDescription: string, historyText: string): Promise<TriageResult> {
     const { object } = await generateObject({
       model: this.model,
       schema: triageSchema,
       system: TRIAGE_SYSTEM_PROMPT,
-      prompt: `Request: ${requestDescription}`,
+      prompt: `${historyText}Request: ${requestDescription}`,
     });
     return object;
   }
 
-  private async explore(requestDescription: string): Promise<string> {
+  private async explore(requestDescription: string, historyText: string): Promise<string> {
     const tools = [createReadFileTool(this.workspaceRoot), createListDirectoryTool(this.workspaceRoot)];
     const executor = new Executor(this.modelClient, tools, { maxTurns: this.exploreMaxTurns });
-    const result = await executor.run(EXPLORE_SYSTEM_PROMPT, requestDescription);
+    const result = await executor.run(EXPLORE_SYSTEM_PROMPT, `${historyText}Request: ${requestDescription}`);
     return result.finalText;
   }
 
-  private async structure(requestDescription: string, context: string | undefined): Promise<SubtaskPlan> {
+  private async structure(
+    requestDescription: string,
+    context: string | undefined,
+    historyText: string
+  ): Promise<SubtaskPlan> {
     const prompt = context
-      ? `Request: ${requestDescription}\n\nContext gathered from exploring the repository:\n${context}`
-      : `Request: ${requestDescription}`;
+      ? `${historyText}Request: ${requestDescription}\n\nContext gathered from exploring the repository:\n${context}`
+      : `${historyText}Request: ${requestDescription}`;
     const { object } = await generateObject({
       model: this.model,
       schema: planSchema,
@@ -226,4 +254,27 @@ the new subtasks needed, or an empty list if none are needed.`;
 /** Truncates a completed subtask's finalText for the replan prompt, so a long output doesn't dominate it. */
 function truncate(text: string, maxLength: number): string {
   return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+/**
+ * Formats the last few conversation turns into a prefix block for triage/explore/structure
+ * prompts, or "" if there's no history -- keeping the prefix empty (rather than an empty section
+ * header) means a single-shot run's prompt is byte-for-byte what it was before this existed.
+ * Exported (pure, no model calls) so this formatting can be unit tested directly, matching the
+ * formatWriteApprovalPrompt/formatJudgePrompt split elsewhere in this codebase.
+ */
+export function formatConversationHistory(history: ConversationTurn[]): string {
+  if (history.length === 0) return "";
+  const recent = history.slice(-MAX_HISTORY_TURNS);
+  const turns = recent
+    .map(
+      (turn, i) =>
+        `Turn ${i + 1} -- User: ${turn.requestDescription}\n` +
+        `Answer: ${truncate(turn.finalText, MAX_HISTORY_ANSWER_LENGTH)}`
+    )
+    .join("\n\n");
+  return (
+    `Conversation so far in this session (context only -- the new request below is what you're ` +
+    `actually deciding on):\n\n${turns}\n\n---\n\n`
+  );
 }
