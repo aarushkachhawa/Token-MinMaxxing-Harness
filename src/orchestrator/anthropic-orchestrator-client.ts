@@ -4,7 +4,7 @@ import { z } from "zod";
 import { AnthropicModelClient } from "../executor/anthropic-model-client.js";
 import { Executor } from "../executor/executor.js";
 import { createListDirectoryTool, createReadFileTool } from "../tools/index.js";
-import type { OrchestratorClient, OrchestratorRequest, SubtaskPlan } from "./types.js";
+import type { OrchestratorClient, OrchestratorRequest, ReplanContext, SubtaskPlan } from "./types.js";
 
 export interface TriageResult {
   needsExploration: boolean;
@@ -24,6 +24,8 @@ export interface AnthropicOrchestratorClientOptions {
 
 const DEFAULT_MODEL_ID = "claude-sonnet-5";
 const DEFAULT_EXPLORE_MAX_TURNS = 6;
+/** Cap on how much of a completed subtask's finalText gets fed into the replan prompt. */
+const MAX_COMPLETED_OUTPUT_SUMMARY_LENGTH = 500;
 
 const triageSchema = z.object({
   needsExploration: z.boolean(),
@@ -36,7 +38,11 @@ const subtaskSchema = z.object({
   dependsOn: z.array(z.string()),
   highRisk: z.boolean(),
 });
+// decompose() must always produce at least one subtask; replan() must NOT enforce that -- an
+// empty result there is the valid "no further work needed" answer -- so the two get distinct
+// plan-level schemas even though both reuse the same subtaskSchema.
 const planSchema = z.object({ subtasks: z.array(subtaskSchema).min(1) });
+const replanSchema = z.object({ subtasks: z.array(subtaskSchema) });
 
 const TRIAGE_SYSTEM_PROMPT = `You are the triage step of a coding harness's orchestrator. Given a \
 request, decide whether answering or planning it requires looking at a specific codebase/repository, \
@@ -73,6 +79,27 @@ produce exactly one subtask, not be padded into an artificial multi-step plan. I
 exploring the repository is provided below, ground your subtasks in the real files/structure it \
 describes rather than guessing.`;
 
+const REPLAN_SYSTEM_PROMPT = `You are the replanning step of a coding harness's orchestrator, invoked \
+after a batch of subtasks has finished running. You'll be given the original request, the subtasks \
+already known (planned, whether or not they've completed yet), and a summary of what's actually been \
+produced so far. Decide whether the original request still needs additional subtasks beyond what's \
+already planned.
+
+Only propose new subtasks when the completed work actually reveals a gap: something the original \
+decomposition missed, an edge case a completed subtask's output surfaced, or follow-on work implied \
+by a result. Do not propose a subtask that duplicates or overlaps with an existing one (completed or \
+still pending). If the existing plan already covers everything the request needs, return an empty \
+subtasks list -- that is the correct answer far more often than not.
+
+Each new subtask needs the same fields as a normal plan:
+- id: a short, unique, kebab-case slug that does not collide with any existing subtask id
+- description: self-contained enough that a worker given only this description (plus the outputs of \
+its listed dependencies) could act on it without other context
+- dependsOn: ids of subtasks (existing or newly proposed) whose output this one needs before it can \
+run (empty array if none)
+- highRisk: true if this subtask touches security, authentication, payments, deletions, or production \
+configuration`;
+
 /**
  * Real OrchestratorClient backed by the Vercel AI SDK. Three phases per call:
  *
@@ -84,6 +111,12 @@ describes rather than guessing.`;
  * 3. Structure (generateObject, no tools) -- turns the request (plus any exploration summary)
  *    into a SubtaskPlan. Orchestrator.plan() still does all DAG validation on the result; this
  *    client doesn't repair an invalid plan, it just produces one.
+ *
+ * replan() is a separate, single generateObject call used after a batch of subtasks has
+ * completed: given the original request, the subtasks already known, and what's actually been
+ * produced, it decides whether more subtasks are needed and returns just the new ones (or none).
+ * Orchestrator.replan() does all DAG validation against the merged existing+new graph; this
+ * client doesn't repair an invalid result any more than decompose() does.
  */
 export class AnthropicOrchestratorClient implements OrchestratorClient {
   private model: ReturnType<ReturnType<typeof createAnthropic>>;
@@ -119,6 +152,43 @@ export class AnthropicOrchestratorClient implements OrchestratorClient {
     return this.structure(request.requestDescription, context);
   }
 
+  async replan(context: ReplanContext): Promise<SubtaskPlan> {
+    const existingSummary =
+      context.existingSubtasks
+        .map(
+          (subtask) =>
+            `- ${subtask.id} (dependsOn: [${subtask.dependsOn.join(", ")}]${subtask.highRisk ? ", highRisk" : ""}): ${subtask.description}`
+        )
+        .join("\n") || "(none)";
+
+    const completedSummary =
+      context.completedOutputs
+        .map(
+          (output) =>
+            `- ${output.subtaskId} (${output.description}): ${truncate(output.finalText, MAX_COMPLETED_OUTPUT_SUMMARY_LENGTH)}`
+        )
+        .join("\n") || "(none completed yet)";
+
+    const prompt = `Original request: ${context.originalRequest}
+
+Existing subtasks (planned so far):
+${existingSummary}
+
+Completed so far:
+${completedSummary}
+
+Does the original request need any additional subtasks beyond what's already planned? Return only \
+the new subtasks needed, or an empty list if none are needed.`;
+
+    const { object } = await generateObject({
+      model: this.model,
+      schema: replanSchema,
+      system: REPLAN_SYSTEM_PROMPT,
+      prompt,
+    });
+    return object;
+  }
+
   private async triage(requestDescription: string): Promise<TriageResult> {
     const { object } = await generateObject({
       model: this.model,
@@ -148,4 +218,9 @@ export class AnthropicOrchestratorClient implements OrchestratorClient {
     });
     return object;
   }
+}
+
+/** Truncates a completed subtask's finalText for the replan prompt, so a long output doesn't dominate it. */
+function truncate(text: string, maxLength: number): string {
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
 }

@@ -5,4 +5,10 @@ export {
 } from "./anthropic-orchestrator-client.js";
 export { ScriptedOrchestratorClient } from "./fakes.js";
 export { Orchestrator } from "./orchestrator.js";
-export type { OrchestratorClient, OrchestratorRequest, Subtask, SubtaskPlan } from "./types.js";
+export type {
+  OrchestratorClient,
+  OrchestratorRequest,
+  ReplanContext,
+  Subtask,
+  SubtaskPlan,
+} from "./types.js";
