@@ -61,6 +61,14 @@ interface PipelineDeps {
    * the request completes. /reset clears it to start a new topic without losing router state.
    */
   conversationHistory: ConversationTurn[];
+  /**
+   * Set by orchestratorClient's onTriage callback during plan(), read by runRequest() right after
+   * plan() resolves to decide whether this turn is worth appending to conversationHistory at all --
+   * a shared mutable cell rather than a return value because AnthropicOrchestratorClient's public
+   * decompose()/SubtaskPlan contract has no natural home for "was this worth remembering", and only
+   * one runRequest() call is ever in flight at a time so there's no risk of it being stale.
+   */
+  lastTriage: { worthRemembering: boolean };
 }
 
 function printHelp(): void {
@@ -94,7 +102,7 @@ function printHelp(): void {
  * for where that history actually gets used (triage/explore/structure prompts).
  */
 async function runRequest(requestDescription: string, deps: PipelineDeps): Promise<void> {
-  const { orchestratorClient, routerStore, bandit, runner, progressUI, conversationHistory } = deps;
+  const { orchestratorClient, routerStore, bandit, runner, progressUI, conversationHistory, lastTriage } = deps;
 
   try {
     progressUI.start("Thinking...");
@@ -154,8 +162,13 @@ async function runRequest(requestDescription: string, deps: PipelineDeps): Promi
     console.log(finalText);
     console.log();
     // Recorded after the request actually finishes -- if runRequest throws above, this turn never
-    // gets appended, since there's no coherent "answer" to remember for a failed request.
-    conversationHistory.push({ requestDescription, finalText });
+    // gets appended, since there's no coherent "answer" to remember for a failed request. Also
+    // skipped when triage judged this a one-off aside (see TriageResult.worthRemembering) -- the
+    // request still ran and got answered above either way, it just doesn't stick around to
+    // potentially confuse a later "it"/"that" in an unrelated follow-up.
+    if (lastTriage.worthRemembering) {
+      conversationHistory.push({ requestDescription, finalText });
+    }
   } finally {
     // Safety net: if something threw mid-phase, this guarantees the spinner/raw mode gets torn
     // down (stop() is a safe no-op if already stopped) instead of leaking into the next prompt.
@@ -168,6 +181,9 @@ async function main() {
   console.log("Type a request, /help for commands, /exit to quit.\n");
 
   const progressUI = new ProgressUI();
+  // Defaults true so a request that somehow completes without triage ever firing (shouldn't
+  // happen in practice) still gets remembered rather than silently dropped.
+  const lastTriage: { worthRemembering: boolean } = { worthRemembering: true };
 
   // Build all long-lived pipeline dependencies once, before the REPL loop starts, and reuse
   // them across every request typed into the REPL.
@@ -175,8 +191,11 @@ async function main() {
     apiKey: getAnthropicApiKey(),
     workspaceRoot: process.cwd(),
     onTriage: (triage) => {
+      lastTriage.worthRemembering = triage.worthRemembering;
       progressUI.setStep(triage.needsExploration ? "Exploring repo..." : "Planning...");
-      progressUI.log(`Triage: needsExploration=${triage.needsExploration} -- ${triage.reasoning}`);
+      progressUI.log(
+        `Triage: needsExploration=${triage.needsExploration}, worthRemembering=${triage.worthRemembering} -- ${triage.reasoning}`
+      );
     },
     onExploration: (summary) => {
       progressUI.setStep("Planning...");
@@ -243,6 +262,7 @@ async function main() {
     runner,
     progressUI,
     conversationHistory,
+    lastTriage,
   };
 
   const cleanup = () => {

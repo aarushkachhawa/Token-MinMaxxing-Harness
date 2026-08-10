@@ -8,6 +8,14 @@ import type { ConversationTurn, OrchestratorClient, OrchestratorRequest, ReplanC
 
 export interface TriageResult {
   needsExploration: boolean;
+  /**
+   * Whether this request/answer is worth keeping in conversationHistory for future turns to
+   * reference. False for one-off asides (a quick unrelated lookup, trivial arithmetic) that
+   * would otherwise just add noise a later "it"/"that" could mis-resolve against; true for
+   * anything that's plausibly part of an ongoing thread. The turn still runs and answers either
+   * way -- this only controls whether it gets remembered afterward, not whether it executes.
+   */
+  worthRemembering: boolean;
   reasoning: string;
 }
 
@@ -29,13 +37,20 @@ const DEFAULT_MODEL_ID = "claude-sonnet-5";
 const DEFAULT_EXPLORE_MAX_TURNS = 10;
 /** Cap on how much of a completed subtask's finalText gets fed into the replan prompt. */
 const MAX_COMPLETED_OUTPUT_SUMMARY_LENGTH = 500;
-/** Cap on how many prior turns of conversation history get fed into triage/explore/structure. */
+/** Cap on how many of the most recent turns get included in full (request + answer). */
 const MAX_HISTORY_TURNS = 5;
-/** Cap on how much of each prior turn's answer gets included -- a full history transcript would grow unboundedly. */
+/** Cap on how much of each recent turn's answer gets included -- a full history transcript would grow unboundedly. */
 const MAX_HISTORY_ANSWER_LENGTH = 500;
+/**
+ * Cap on how many turns *older* than the recent window still get a mention at all, as a condensed
+ * request-only line rather than dropped outright -- bounds worst-case prompt growth in a very long
+ * session while still keeping some referential thread beyond the last MAX_HISTORY_TURNS turns.
+ */
+const MAX_CONDENSED_TURNS = 10;
 
 const triageSchema = z.object({
   needsExploration: z.boolean(),
+  worthRemembering: z.boolean(),
   reasoning: z.string(),
 });
 
@@ -65,7 +80,15 @@ self-contained regardless of any codebase (e.g. "what is 1+1", "explain what Tho
 
 If prior conversation turns are provided, use them only to understand what the new request refers \
 to (e.g. "that file", "it", "now do the same for the other one") -- they are context for reading the \
-new request, not additional requests to act on themselves.`;
+new request, not additional requests to act on themselves.
+
+Also decide worthRemembering: true if this request is plausibly part of an ongoing thread a later \
+request might reference or build on (e.g. it discusses a specific file, a design decision, an \
+in-progress task). false if it's a self-contained aside unlikely to be referenced again (a quick \
+unrelated fact lookup, trivial arithmetic, a one-off question with no connection to anything else in \
+the session) -- remembering these just adds noise a future "it"/"that" could mis-resolve against. \
+This only controls whether the exchange is kept in memory afterward; it does not change whether or \
+how the request gets answered.`;
 
 const EXPLORE_SYSTEM_PROMPT = `You are the exploration phase of a coding harness's orchestrator, \
 working in this project's repository. Use list_directory and read_file (paths relative to the \
@@ -257,15 +280,34 @@ function truncate(text: string, maxLength: number): string {
 }
 
 /**
- * Formats the last few conversation turns into a prefix block for triage/explore/structure
- * prompts, or "" if there's no history -- keeping the prefix empty (rather than an empty section
- * header) means a single-shot run's prompt is byte-for-byte what it was before this existed.
+ * Formats conversation history into a prefix block for triage/explore/structure prompts, or "" if
+ * there's no history -- keeping the prefix empty (rather than an empty section header) means a
+ * single-shot run's prompt is byte-for-byte what it was before this existed.
+ *
+ * Two tiers, so a turn aging out of the recent window isn't just forgotten outright: the last
+ * MAX_HISTORY_TURNS turns appear in full (request + truncated answer); up to MAX_CONDENSED_TURNS
+ * turns older than that get a condensed request-only mention (no answer text at all -- a few words
+ * each, not another few hundred tokens); anything older than both windows is genuinely dropped.
+ * This keeps prompt growth bounded even across a very long session while still leaving *some*
+ * referential thread beyond the last few turns for triage/structure to resolve against.
+ *
  * Exported (pure, no model calls) so this formatting can be unit tested directly, matching the
  * formatWriteApprovalPrompt/formatJudgePrompt split elsewhere in this codebase.
  */
 export function formatConversationHistory(history: ConversationTurn[]): string {
   if (history.length === 0) return "";
+
   const recent = history.slice(-MAX_HISTORY_TURNS);
+  const olderThanRecent = history.slice(0, Math.max(0, history.length - MAX_HISTORY_TURNS));
+  const condensed = olderThanRecent.slice(-MAX_CONDENSED_TURNS);
+
+  const condensedLine =
+    condensed.length > 0
+      ? `Earlier in this session (condensed, oldest first): ${condensed
+          .map((turn) => `"${truncate(turn.requestDescription, 100)}"`)
+          .join("; ")}\n\n`
+      : "";
+
   const turns = recent
     .map(
       (turn, i) =>
@@ -273,8 +315,9 @@ export function formatConversationHistory(history: ConversationTurn[]): string {
         `Answer: ${truncate(turn.finalText, MAX_HISTORY_ANSWER_LENGTH)}`
     )
     .join("\n\n");
+
   return (
     `Conversation so far in this session (context only -- the new request below is what you're ` +
-    `actually deciding on):\n\n${turns}\n\n---\n\n`
+    `actually deciding on):\n\n${condensedLine}${turns}\n\n---\n\n`
   );
 }
