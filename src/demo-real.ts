@@ -89,23 +89,51 @@ async function main() {
   );
 
   const completed = new Set<string>();
-  while (!orchestrator.isComplete(plan, completed)) {
-    for (const subtask of orchestrator.getReadySubtasks(plan, completed)) {
-      console.log(`--- Subtask "${subtask.id}": ${subtask.description} ---`);
-      if (subtask.dependsOn.length > 0) {
-        console.log(`Context from: ${subtask.dependsOn.join(", ")}`);
+  const allOutputs: SubtaskOutput[] = [];
+  // Tracks every subtask id the orchestrator has ever handed out (initial plan + anything
+  // replan() has added), so a replan response can be diffed against it to tell "added new work"
+  // apart from "just re-listed what we already knew about".
+  const knownIds = new Set(plan.subtasks.map((s) => s.id));
+
+  for (;;) {
+    while (!orchestrator.isComplete(completed)) {
+      for (const subtask of orchestrator.getReadySubtasks(completed)) {
+        console.log(`--- Subtask "${subtask.id}": ${subtask.description} ---`);
+        if (subtask.dependsOn.length > 0) {
+          console.log(`Context from: ${subtask.dependsOn.join(", ")}`);
+        }
+
+        const { output, reward, escalatedAfterFailure } = await runner.run(subtask, outputs);
+
+        console.log(`Final: "${output.finalText}"`);
+        console.log(`Reward: ${reward.toFixed(2)}${escalatedAfterFailure ? " (after escalation retry)" : ""}\n`);
+
+        outputs.set(subtask.id, output);
+        allOutputs.push(output);
+        completed.add(subtask.id);
+        // save after every subtask, not just at the end -- a crash mid-run shouldn't lose what
+        // was already learned from the subtasks that did complete.
+        saveRouterState(bandit, routerStore);
       }
+    }
 
-      const { output, reward, escalatedAfterFailure } = await runner.run(subtask, outputs);
+    // Every subtask the orchestrator currently knows about has completed. Re-enter the
+    // orchestrator once to see whether what actually got produced reveals more work the
+    // original plan didn't anticipate, rather than assuming the first plan was complete.
+    console.log("Checking whether the plan needs additional subtasks...");
+    const merged = await orchestrator.replan(requestDescription, allOutputs);
+    const newSubtasks = merged.subtasks.filter((subtask) => !knownIds.has(subtask.id));
 
-      console.log(`Final: "${output.finalText}"`);
-      console.log(`Reward: ${reward.toFixed(2)}${escalatedAfterFailure ? " (after escalation retry)" : ""}\n`);
+    if (newSubtasks.length === 0) {
+      console.log("Replanning found no further work needed.\n");
+      break;
+    }
 
-      outputs.set(subtask.id, output);
-      completed.add(subtask.id);
-      // save after every subtask, not just at the end -- a crash mid-run shouldn't lose what
-      // was already learned from the subtasks that did complete.
-      saveRouterState(bandit, routerStore);
+    console.log(
+      `Replanning added ${newSubtasks.length} new subtask(s): ${newSubtasks.map((s) => s.id).join(", ")}\n`
+    );
+    for (const subtask of newSubtasks) {
+      knownIds.add(subtask.id);
     }
   }
 

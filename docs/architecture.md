@@ -21,6 +21,18 @@ correctly at the lowest cost, learning that assignment over time instead of hard
    exploration summary, into a validated subtask DAG). All DAG validation — cycles, unknown/self
    dependencies, duplicate ids — happens after the client returns a plan, not inside it; an invalid
    plan currently just fails rather than being repaired and retried.
+
+   Once every subtask the orchestrator currently knows about has completed, the driving loop calls
+   **replan** before declaring the run done: the orchestrator hands the client the original request,
+   the subtasks already planned, and what actually got produced (each completed subtask's id,
+   description, and a truncated summary of its final output), and asks whether the request still
+   needs more work. "No further work needed" is a first-class, valid answer — an empty result there
+   isn't a failure the way an empty result from the initial decomposition is — and is in fact the
+   common case; new subtasks only come back when a completed output actually surfaced a gap the
+   original plan missed. Any new subtasks are validated against the full existing+new graph (the same
+   duplicate-id/unknown-or-self-dependency/cycle checks as the initial plan, just run against the
+   merged subtask list) and merged into the tracked plan, which can unlock a further round of ready
+   subtasks and another replan once those finish too.
 2. **Task classifier** — labels each subtask against a configurable category taxonomy (e.g.
    `trivial-lookup`, `small-edit`, `multi-file-refactor`, `test-authoring`, `exploration`). Cheap
    heuristics first, LLM fallback only when ambiguous, so classification itself doesn't burn budget.
@@ -34,8 +46,8 @@ correctly at the lowest cost, learning that assignment over time instead of hard
 6. **Reward collector** — scores the outcome (see Reward signal below) and updates the stats store;
    failures/low-confidence results escalate to the next tier rather than just failing.
 
-The orchestrator re-enters after each batch of subtask results rather than planning once and
-executing blindly — coding tasks routinely reveal new work mid-flight.
+The orchestrator re-enters (via replan, above) after each batch of subtask results rather than
+planning once and executing blindly — coding tasks routinely reveal new work mid-flight.
 
 ## Router
 

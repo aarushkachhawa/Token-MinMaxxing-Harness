@@ -98,8 +98,8 @@ async function main() {
   const rewardCollector = new RewardCollector();
 
   const completed = new Set<string>();
-  while (!orchestrator.isComplete(plan, completed)) {
-    for (const subtask of orchestrator.getReadySubtasks(plan, completed)) {
+  while (!orchestrator.isComplete(completed)) {
+    for (const subtask of orchestrator.getReadySubtasks(completed)) {
       await runSubtask(subtask, bandit, classifier, rewardCollector);
       completed.add(subtask.id);
     }

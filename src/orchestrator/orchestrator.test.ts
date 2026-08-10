@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import type { SubtaskOutput } from "../context/types.js";
 import { ScriptedOrchestratorClient } from "./fakes.js";
 import { Orchestrator } from "./orchestrator.js";
 import type { Subtask, SubtaskPlan } from "./types.js";
@@ -8,6 +9,14 @@ function subtask(overrides: Partial<Subtask> & { id: string }): Subtask {
     description: `do ${overrides.id}`,
     dependsOn: [],
     highRisk: false,
+    ...overrides,
+  };
+}
+
+function output(overrides: Partial<SubtaskOutput> & { subtaskId: string }): SubtaskOutput {
+  return {
+    description: `do ${overrides.subtaskId}`,
+    finalText: `done: ${overrides.subtaskId}`,
     ...overrides,
   };
 }
@@ -84,30 +93,112 @@ describe("Orchestrator DAG traversal", () => {
       subtask({ id: "d", dependsOn: ["c"] }),
     ],
   };
-  const orchestrator = new Orchestrator(new ScriptedOrchestratorClient([]));
+  let orchestrator: Orchestrator;
+
+  beforeEach(async () => {
+    orchestrator = new Orchestrator(new ScriptedOrchestratorClient([plan]));
+    await orchestrator.plan("task");
+  });
 
   it("returns only dependency-free subtasks as ready at the start", () => {
-    const ready = orchestrator.getReadySubtasks(plan, new Set());
+    const ready = orchestrator.getReadySubtasks(new Set());
     expect(ready.map((s) => s.id).sort()).toEqual(["a", "b"]);
   });
 
   it("unlocks a subtask once all of its dependencies are completed", () => {
-    const ready = orchestrator.getReadySubtasks(plan, new Set(["a", "b"]));
+    const ready = orchestrator.getReadySubtasks(new Set(["a", "b"]));
     expect(ready.map((s) => s.id)).toEqual(["c"]);
   });
 
   it("does not re-offer an already-completed subtask", () => {
-    const ready = orchestrator.getReadySubtasks(plan, new Set(["a", "b", "c"]));
+    const ready = orchestrator.getReadySubtasks(new Set(["a", "b", "c"]));
     expect(ready.map((s) => s.id)).toEqual(["d"]);
   });
 
   it("does not offer a subtask whose dependencies are only partially met", () => {
-    const ready = orchestrator.getReadySubtasks(plan, new Set(["a"]));
+    const ready = orchestrator.getReadySubtasks(new Set(["a"]));
     expect(ready.map((s) => s.id)).toEqual(["b"]);
   });
 
   it("reports incomplete until every subtask id has been completed", () => {
-    expect(orchestrator.isComplete(plan, new Set(["a", "b", "c"]))).toBe(false);
-    expect(orchestrator.isComplete(plan, new Set(["a", "b", "c", "d"]))).toBe(true);
+    expect(orchestrator.isComplete(new Set(["a", "b", "c"]))).toBe(false);
+    expect(orchestrator.isComplete(new Set(["a", "b", "c", "d"]))).toBe(true);
+  });
+});
+
+describe("Orchestrator.replan", () => {
+  async function orchestratorWithPlan(
+    initialPlan: SubtaskPlan,
+    replanPlans: SubtaskPlan[] = []
+  ): Promise<{ orchestrator: Orchestrator; client: ScriptedOrchestratorClient }> {
+    const client = new ScriptedOrchestratorClient([initialPlan], replanPlans);
+    const orchestrator = new Orchestrator(client);
+    await orchestrator.plan("original request");
+    return { orchestrator, client };
+  }
+
+  it("merges new subtasks into the tracked plan and passes existing subtasks + completed outputs through", async () => {
+    const initialPlan: SubtaskPlan = { subtasks: [subtask({ id: "a" })] };
+    const newPlan: SubtaskPlan = { subtasks: [subtask({ id: "b", dependsOn: ["a"] })] };
+    const { orchestrator, client } = await orchestratorWithPlan(initialPlan, [newPlan]);
+    const completedOutputs = [output({ subtaskId: "a" })];
+
+    const merged = await orchestrator.replan("original request", completedOutputs);
+
+    expect(merged.subtasks.map((s) => s.id).sort()).toEqual(["a", "b"]);
+    expect(client.receivedReplanRequests[0]).toEqual({
+      originalRequest: "original request",
+      existingSubtasks: initialPlan.subtasks,
+      completedOutputs,
+    });
+    // getReadySubtasks/isComplete now read the merged plan.
+    expect(orchestrator.getReadySubtasks(new Set(["a"])).map((s) => s.id)).toEqual(["b"]);
+  });
+
+  it("throws when a new subtask's id collides with an existing subtask's id", async () => {
+    const initialPlan: SubtaskPlan = { subtasks: [subtask({ id: "a" })] };
+    const newPlan: SubtaskPlan = { subtasks: [subtask({ id: "a" })] };
+    const { orchestrator } = await orchestratorWithPlan(initialPlan, [newPlan]);
+
+    await expect(orchestrator.replan("original request", [])).rejects.toThrow(/Duplicate subtask id/);
+  });
+
+  it("accepts a new subtask that depends on an existing subtask's id", async () => {
+    const initialPlan: SubtaskPlan = { subtasks: [subtask({ id: "a" })] };
+    const newPlan: SubtaskPlan = { subtasks: [subtask({ id: "b", dependsOn: ["a"] })] };
+    const { orchestrator } = await orchestratorWithPlan(initialPlan, [newPlan]);
+
+    const merged = await orchestrator.replan("original request", [output({ subtaskId: "a" })]);
+
+    expect(merged.subtasks.find((s) => s.id === "b")?.dependsOn).toEqual(["a"]);
+  });
+
+  it("throws when a cycle spans both existing and new subtasks", async () => {
+    // An existing subtask's dependsOn is fixed and validated before any new subtask id exists,
+    // so it can never point *at* a new subtask -- a cycle can't loop back through an existing
+    // node. What it can do is participate in a merged graph where a new subtask legitimately
+    // depends on it while two other new subtasks cycle back on each other: "b" depends on the
+    // existing "a" *and* on new "c", while "c" depends back on "b" -- a cycle that only shows up
+    // once existing and new subtasks are validated together as one graph.
+    const initialPlan: SubtaskPlan = { subtasks: [subtask({ id: "a" })] };
+    const newPlan: SubtaskPlan = {
+      subtasks: [
+        subtask({ id: "b", dependsOn: ["a", "c"] }),
+        subtask({ id: "c", dependsOn: ["b"] }),
+      ],
+    };
+    const { orchestrator } = await orchestratorWithPlan(initialPlan, [newPlan]);
+
+    await expect(orchestrator.replan("original request", [])).rejects.toThrow(/Cycle detected/);
+  });
+
+  it("leaves the plan unchanged when replan returns an empty subtasks list", async () => {
+    const initialPlan: SubtaskPlan = { subtasks: [subtask({ id: "a" })] };
+    const { orchestrator } = await orchestratorWithPlan(initialPlan, [{ subtasks: [] }]);
+
+    const merged = await orchestrator.replan("original request", [output({ subtaskId: "a" })]);
+
+    expect(merged.subtasks.map((s) => s.id)).toEqual(["a"]);
+    expect(orchestrator.isComplete(new Set(["a"]))).toBe(true);
   });
 });
