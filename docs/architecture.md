@@ -155,13 +155,26 @@ Anthropic) is a registry entry, not new routing code.
   model is currently undercosted, and gets tried first even on categories where a failed attempt is
   expensive (side effects, wasted tokens). Needs revisiting once the executor and escalation loop
   exist and failure probabilities are actually observable.
-- **`read_file` has no offset/limit**: v1 reads the whole file (up to a ~100KB truncation cap) rather
-  than supporting a line-range read. Revisit if truncation on large files turns out to bite in
-  practice — offset/limit would let a worker ask for a specific slice instead of just the head.
-- **`write_file` has no auto-created parent directories**: the parent directory must already
-  exist, matching `read_file`'s "reject rather than guess" posture — a model that got the path
-  wrong gets a clear error instead of an unexpected new directory tree. Revisit if this proves
-  too restrictive in practice; would be an opt-in flag, not a default.
+- **`read_file` offset/limit**: implemented. Optional 1-indexed `offset` and `limit` args select a
+  specific line range instead of defaulting to the head of the file; `maxBytes` truncation still
+  applies as a safety net on top of whatever range is selected, and an `offset` past the end of
+  the file returns empty content rather than an error (a legitimate no-op, not a security
+  concern). Omitting both args reproduces the original whole-file-up-to-maxBytes behavior exactly.
+- **`write_file` auto-created parent directories**: implemented as an opt-in `createParents`
+  constructor option (default `false`, matching the original "reject rather than guess"
+  behavior). When enabled and the immediate parent is missing, the tool walks up to the deepest
+  ancestor that currently exists, `realpath`s *that* to confirm it's genuinely within the
+  workspace root, and only then creates the missing segments with `fs.mkdir(dir, { recursive:
+  true })` — so a symlink further up the (partially nonexistent) path still can't be used to
+  escape the workspace just because the specific target's parent didn't technically exist yet.
+- **`write_file` against the real repo is now gated, not just sandboxed**: `demo-real.ts` and
+  `stress-test.ts` both wire it up scoped to `process.cwd()` (the actual project, not a scratch
+  dir) with `onBeforeWrite` set to `interactiveWriteApprovalGate`
+  (`src/tools/write-approval-gate.ts`) — every pending write prints the path, whether it's a new
+  file or an overwrite, and the full before/after content to the terminal, then blocks on stdin
+  for an explicit y/yes, defaulting to refuse on anything else. This is a human-in-the-loop gate
+  sized for interactive demo/stress runs; an unattended real-repo run would need a different one
+  (allowlist rules, diff-size limits) since there's no human to answer the prompt.
 - **`delete_file` and any shell/command tool are not built**: `write_file`'s denylist/containment/
   approval-hook pattern is the template if/when a delete tool is added, but deletion and arbitrary
   command execution are their own risk categories, not just "write_file but more so."

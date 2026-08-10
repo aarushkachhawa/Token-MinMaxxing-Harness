@@ -15,12 +15,19 @@ import { RewardCollector } from "./reward/reward-collector.js";
 import { AnthropicEscalationClient } from "./router/anthropic-escalation-client.js";
 import { Router } from "./router/bandit.js";
 import { SubtaskRunner } from "./runner/index.js";
-import { createListDirectoryTool, createReadFileTool } from "./tools/index.js";
+import {
+  createListDirectoryTool,
+  createReadFileTool,
+  createWriteFileTool,
+  interactiveWriteApprovalGate,
+} from "./tools/index.js";
 
 const SYSTEM_PROMPT =
   "You are a careful coding assistant working in this project's repository. Use " +
   "list_directory to explore the project structure and read_file to see a file's contents " +
-  "(both take paths relative to the project root). Be brief but complete.";
+  "(both take paths relative to the project root). write_file is available to create or " +
+  "overwrite files, but every write requires explicit human approval before it takes effect. " +
+  "Be brief but complete.";
 
 const DEFAULT_TASK = "list the test files in src/reward and summarize what proxy-signals.ts checks for";
 
@@ -47,7 +54,14 @@ async function main() {
     judgeSampleRate: alwaysJudge ? 1 : undefined,
   });
   const modelClient = new AnthropicModelClient({ apiKey: getAnthropicApiKey() });
-  const tools = [createReadFileTool(process.cwd()), createListDirectoryTool(process.cwd())];
+  // Same interactive approval gate as demo-real.ts -- this script deliberately throws
+  // adversarial tasks at the real tool sandbox, so write_file staying gated here (not just in
+  // demo-real.ts) is the point, not an afterthought.
+  const tools = [
+    createReadFileTool(process.cwd()),
+    createListDirectoryTool(process.cwd()),
+    createWriteFileTool(process.cwd(), { onBeforeWrite: interactiveWriteApprovalGate }),
+  ];
   const contextCompiler = new ContextCompiler();
 
   const runner = new SubtaskRunner(
