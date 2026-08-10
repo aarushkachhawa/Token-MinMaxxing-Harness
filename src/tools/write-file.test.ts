@@ -153,4 +153,47 @@ describe("createWriteFileTool", () => {
     const tool = createWriteFileTool(workspace);
     await expect(tool.execute({ path: "a.txt", contents: 123 })).rejects.toThrow();
   });
+
+  describe("createParents", () => {
+    it("still throws for a missing parent when createParents is omitted (default unchanged)", async () => {
+      const tool = createWriteFileTool(workspace);
+      await expect(tool.execute({ path: "missing-dir/a.txt", contents: "x" })).rejects.toThrow(
+        /Parent directory does not exist/
+      );
+    });
+
+    it("still throws for a missing parent when createParents is explicitly false", async () => {
+      const tool = createWriteFileTool(workspace, { createParents: false });
+      await expect(tool.execute({ path: "missing-dir/a.txt", contents: "x" })).rejects.toThrow(
+        /Parent directory does not exist/
+      );
+    });
+
+    it("creates multiple missing ancestor directories in one call when createParents is true", async () => {
+      const tool = createWriteFileTool(workspace, { createParents: true });
+
+      const result = await tool.execute({ path: "a/b/c/d.txt", contents: "deep" });
+
+      expect(result).toMatchObject({ created: true, newContents: "deep" });
+      expect(await readFile(join(workspace, "a", "b", "c", "d.txt"), "utf-8")).toBe("deep");
+    });
+
+    it(
+      "rejects via createParents when an ancestor directory is a symlink escaping the workspace, " +
+        "without creating anything",
+      async () => {
+        // link-dir exists inside the workspace but points outside it; the specific file's
+        // immediate parent ("link-dir/newsub") doesn't exist yet, which is exactly the case
+        // that must NOT be treated as automatically safe.
+        await symlink(outside, join(workspace, "link-dir"), "dir");
+        const tool = createWriteFileTool(workspace, { createParents: true });
+
+        await expect(
+          tool.execute({ path: "link-dir/newsub/evil.txt", contents: "x" })
+        ).rejects.toThrow(/escapes the workspace/);
+
+        await expect(readFile(join(outside, "newsub", "evil.txt"), "utf-8")).rejects.toThrow();
+      }
+    );
+  });
 });
