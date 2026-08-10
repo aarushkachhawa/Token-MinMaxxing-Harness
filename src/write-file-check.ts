@@ -5,9 +5,11 @@
  * disk afterward as proof the write really happened, not just what the model claims it did.
  *
  * Spends real tokens on the key in .env every time it runs.
- * Usage: npm run write-check -- "your task description"
+ * Usage: npm run write-check -- "your task description" [--keep]
  *   (a seed file notes.txt with placeholder content is always created first, but the task
  *   doesn't have to be about it -- e.g. try "create a new file called hello.txt with ...")
+ *   --keep skips deleting the scratch directory, so you can inspect it yourself afterward
+ *   with plain `ls`/`cat` instead of trusting this script's own read-back.
  */
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -20,7 +22,9 @@ import { createListDirectoryTool, createReadFileTool, createWriteFileTool } from
 const DEFAULT_TASK = "Read notes.txt, then replace its contents with a short three-line poem about software testing.";
 
 async function main() {
-  const task = process.argv.slice(2).join(" ") || DEFAULT_TASK;
+  const args = process.argv.slice(2);
+  const keep = args.includes("--keep");
+  const task = args.filter((arg) => arg !== "--keep").join(" ") || DEFAULT_TASK;
 
   const scratchDir = await mkdtemp(join(tmpdir(), "write-file-check-"));
   console.log(`Scratch directory: ${scratchDir}`);
@@ -59,8 +63,12 @@ async function main() {
     console.log(await readFile(join(scratchDir, name), "utf-8"));
   }
 
-  await rm(scratchDir, { recursive: true, force: true });
-  console.log("(scratch directory cleaned up)\n");
+  if (keep) {
+    console.log(`(--keep set: scratch directory left in place at ${scratchDir})\n`);
+  } else {
+    await rm(scratchDir, { recursive: true, force: true });
+    console.log("(scratch directory cleaned up)\n");
+  }
 }
 
 main().catch((error) => {
