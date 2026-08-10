@@ -12,8 +12,20 @@ export interface SubtaskPlan {
   subtasks: Subtask[];
 }
 
+/** One completed turn of a multi-turn interactive session: the user's request and the answer produced. */
+export interface ConversationTurn {
+  requestDescription: string;
+  finalText: string;
+}
+
 export interface OrchestratorRequest {
   requestDescription: string;
+  /**
+   * Prior turns in this session, oldest first, so decompose() can resolve a follow-up's vague
+   * references ("that file", "it", "now change X") into something concrete. Empty/omitted for a
+   * fresh session or a one-shot run -- see demo-real.ts, which never has more than one turn.
+   */
+  conversationHistory?: ConversationTurn[];
 }
 
 /**

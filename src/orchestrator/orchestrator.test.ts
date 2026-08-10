@@ -33,6 +33,27 @@ describe("Orchestrator.plan", () => {
     expect(client.receivedRequests[0].requestDescription).toBe("build a widget");
   });
 
+  it("defaults conversationHistory to an empty array when omitted", async () => {
+    const plan: SubtaskPlan = { subtasks: [subtask({ id: "a" })] };
+    const client = new ScriptedOrchestratorClient([plan]);
+    const orchestrator = new Orchestrator(client);
+
+    await orchestrator.plan("a one-shot request");
+
+    expect(client.receivedRequests[0].conversationHistory).toEqual([]);
+  });
+
+  it("passes conversationHistory through to the client for resolving follow-up references", async () => {
+    const plan: SubtaskPlan = { subtasks: [subtask({ id: "a" })] };
+    const client = new ScriptedOrchestratorClient([plan]);
+    const orchestrator = new Orchestrator(client);
+    const history = [{ requestDescription: "read foo.ts", finalText: "foo.ts exports bar()" }];
+
+    await orchestrator.plan("now explain that function", history);
+
+    expect(client.receivedRequests[0].conversationHistory).toEqual(history);
+  });
+
   it("throws on an empty plan", async () => {
     const client = new ScriptedOrchestratorClient([{ subtasks: [] }]);
     const orchestrator = new Orchestrator(client);

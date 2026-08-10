@@ -5,6 +5,9 @@
  * AnthropicModelClient, the three real tools, SubtaskRunner), but instead of running a single
  * request from argv and exiting, it opens a REPL (`> `) that keeps the pipeline's long-lived
  * dependencies (router state, bandit, tools) alive across every request typed in, until /exit.
+ * Also remembers the session's conversation so a follow-up like "now do the same for the other
+ * file" resolves correctly -- see conversationHistory in PipelineDeps and runRequest(); /reset
+ * clears it without losing router state or exiting.
  *
  * Usage: npm run cli   (or, once built/linked, just `tmh`)
  */
@@ -14,7 +17,7 @@ import { AnthropicClassifierClient, DEFAULT_CLASSIFICATION_RULES, TaskClassifier
 import { getAnthropicApiKey } from "./config/env.js";
 import { ContextCompiler, type SubtaskOutput } from "./context/index.js";
 import { AnthropicModelClient } from "./executor/anthropic-model-client.js";
-import { AnthropicOrchestratorClient, Orchestrator } from "./orchestrator/index.js";
+import { AnthropicOrchestratorClient, Orchestrator, type ConversationTurn } from "./orchestrator/index.js";
 import { loadRouterState, saveRouterState, SqliteRouterStore } from "./persistence/index.js";
 import { AnthropicJudgeClient } from "./reward/anthropic-judge-client.js";
 import { RewardCollector } from "./reward/reward-collector.js";
@@ -52,6 +55,12 @@ interface PipelineDeps {
   bandit: ReturnType<typeof loadRouterState>;
   runner: SubtaskRunner;
   progressUI: ProgressUI;
+  /**
+   * Prior turns of this session, oldest first, mutated in place: runRequest() reads it (passed to
+   * Orchestrator.plan() so a follow-up's vague references can be resolved) and appends to it once
+   * the request completes. /reset clears it to start a new topic without losing router state.
+   */
+  conversationHistory: ConversationTurn[];
 }
 
 function printHelp(): void {
@@ -59,6 +68,7 @@ function printHelp(): void {
     [
       "Commands:",
       "  /help          show this help",
+      "  /reset         forget conversation history and start a fresh topic",
       "  /exit, /quit   exit the CLI",
       "While a request is running, press 'e' to expand/collapse the detailed progress view.",
     ].join("\n")
@@ -77,14 +87,22 @@ function printHelp(): void {
  * progressUI, which only surfaces it in the expanded box (press 'e'). The one thing that always
  * prints regardless of expand state is the actual deliverable: each subtask's answer text, once
  * the whole request has finished.
+ *
+ * deps.conversationHistory carries prior turns into Orchestrator.plan() so a follow-up like "now
+ * do the same for the other file" resolves against what was actually asked/answered before, and
+ * this request's own answer is appended to it once it completes -- see AnthropicOrchestratorClient
+ * for where that history actually gets used (triage/explore/structure prompts).
  */
 async function runRequest(requestDescription: string, deps: PipelineDeps): Promise<void> {
-  const { orchestratorClient, routerStore, bandit, runner, progressUI } = deps;
+  const { orchestratorClient, routerStore, bandit, runner, progressUI, conversationHistory } = deps;
 
   try {
     progressUI.start("Thinking...");
+    if (conversationHistory.length > 0) {
+      progressUI.log(`Using ${conversationHistory.length} prior turn(s) of context.`);
+    }
     const orchestrator = new Orchestrator(orchestratorClient);
-    const plan = await orchestrator.plan(requestDescription);
+    const plan = await orchestrator.plan(requestDescription, conversationHistory);
     progressUI.log(`Plan: ${plan.subtasks.map((s) => s.id).join(" -> ")}`);
 
     const outputs = new Map<string, SubtaskOutput>();
@@ -132,10 +150,12 @@ async function runRequest(requestDescription: string, deps: PipelineDeps): Promi
     }
 
     progressUI.stop();
-    for (const output of allOutputs) {
-      console.log(output.finalText);
-      console.log();
-    }
+    const finalText = allOutputs.map((output) => output.finalText).join("\n\n");
+    console.log(finalText);
+    console.log();
+    // Recorded after the request actually finishes -- if runRequest throws above, this turn never
+    // gets appended, since there's no coherent "answer" to remember for a failed request.
+    conversationHistory.push({ requestDescription, finalText });
   } finally {
     // Safety net: if something threw mid-phase, this guarantees the spinner/raw mode gets torn
     // down (stop() is a safe no-op if already stopped) instead of leaking into the next prompt.
@@ -214,7 +234,16 @@ async function main() {
     }
   );
 
-  const deps: PipelineDeps = { orchestratorClient, classifier, routerStore, bandit, runner, progressUI };
+  const conversationHistory: ConversationTurn[] = [];
+  const deps: PipelineDeps = {
+    orchestratorClient,
+    classifier,
+    routerStore,
+    bandit,
+    runner,
+    progressUI,
+    conversationHistory,
+  };
 
   const cleanup = () => {
     progressUI.stop();
@@ -241,6 +270,11 @@ async function main() {
     if (line === "/exit" || line === "/quit") break;
     if (line === "/help") {
       printHelp();
+      continue;
+    }
+    if (line === "/reset") {
+      conversationHistory.length = 0;
+      console.log("Conversation history cleared.\n");
       continue;
     }
 

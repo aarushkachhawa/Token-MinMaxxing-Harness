@@ -1,5 +1,5 @@
 import type { SubtaskOutput } from "../context/types.js";
-import type { OrchestratorClient, Subtask, SubtaskPlan } from "./types.js";
+import type { ConversationTurn, OrchestratorClient, Subtask, SubtaskPlan } from "./types.js";
 
 /**
  * Wraps an LLM-backed decomposition call with the validation and DAG bookkeeping that don't
@@ -19,8 +19,8 @@ export class Orchestrator {
     this.client = client;
   }
 
-  async plan(requestDescription: string): Promise<SubtaskPlan> {
-    const plan = await this.client.decompose({ requestDescription });
+  async plan(requestDescription: string, conversationHistory: ConversationTurn[] = []): Promise<SubtaskPlan> {
+    const plan = await this.client.decompose({ requestDescription, conversationHistory });
     if (plan.subtasks.length === 0) {
       throw new Error("Orchestrator produced an empty plan");
     }
