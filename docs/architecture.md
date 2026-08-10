@@ -40,6 +40,17 @@ correctly at the lowest cost, learning that assignment over time instead of hard
    This is the only place conversation history is used — it's resolved into a self-contained
    subtask description during structure, so a worker executing a subtask never sees the history
    itself, matching the context compiler's "narrow, not everything" philosophy below.
+
+   Two things keep that history from growing into a cost problem of its own. First, triage also
+   emits `worthRemembering`: whether this exchange is plausibly part of an ongoing thread versus a
+   one-off aside (a quick unrelated lookup, trivial arithmetic) unlikely to be referenced again — the
+   request still runs and gets answered regardless, this only controls whether the CLI appends it to
+   the session's history afterward, so an unrelated tangent can't later confuse an "it"/"that" it
+   has nothing to do with. Second, `formatConversationHistory()` uses two tiers rather than a single
+   hard cutoff: the last 5 turns appear in full (request + truncated answer), the next 10 turns
+   older than that get condensed to a request-only mention (no answer text — a few words, not a few
+   hundred tokens), and anything older than both is genuinely dropped. A turn aging out of full
+   detail still leaves a trace instead of vanishing outright.
 2. **Task classifier** — labels each subtask against a configurable category taxonomy (e.g.
    `trivial-lookup`, `small-edit`, `multi-file-refactor`, `test-authoring`, `exploration`). Cheap
    heuristics first, LLM fallback only when ambiguous, so classification itself doesn't burn budget.

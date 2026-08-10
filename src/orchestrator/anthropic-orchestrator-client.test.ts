@@ -31,16 +31,60 @@ describe("formatConversationHistory", () => {
     expect(secondIndex).toBeGreaterThan(firstIndex);
   });
 
-  it("keeps only the most recent turns once history exceeds the cap", () => {
+  // `#N#`-delimited markers, not plain "request N": with plain numeric suffixes, "request 1" is
+  // a *substring* of "request 10"/"request 11"/etc, so a not.toContain("request 1") check would
+  // false-negative as soon as double-digit indices are also present in the same text. Wrapping
+  // the index in delimiters means "request #1#" can never be a substring of "request #10#".
+  function marker(label: string, i: number): string {
+    return `${label} #${i}#`;
+  }
+
+  it("keeps the most recent turns in full once history exceeds the recent-window cap", () => {
     const history = Array.from({ length: 8 }, (_, i) =>
-      turn({ requestDescription: `request ${i}`, finalText: `answer ${i}` })
+      turn({ requestDescription: marker("request", i), finalText: marker("answer", i) })
     );
     const text = formatConversationHistory(history);
-    // Oldest turns (0, 1, 2) should have been dropped; only the most recent ones remain.
-    expect(text).not.toContain("request 0");
-    expect(text).not.toContain("request 1");
-    expect(text).not.toContain("request 2");
-    expect(text).toContain("request 7");
+    // Recent window is the last 5 (indices 3-7): full request + answer, in order.
+    for (const i of [3, 4, 5, 6, 7]) {
+      expect(text).toContain(marker("request", i));
+      expect(text).toContain(marker("answer", i));
+    }
+  });
+
+  it("condenses turns older than the recent window to a request-only mention, no answer text", () => {
+    const history = Array.from({ length: 8 }, (_, i) =>
+      turn({ requestDescription: marker("request", i), finalText: marker("answer", i) })
+    );
+    const text = formatConversationHistory(history);
+    // Turns 0-2 fall outside the 5-turn recent window but within the 10-turn condensed window --
+    // their request text should still appear, but their answer text should not.
+    for (const i of [0, 1, 2]) {
+      expect(text).toContain(marker("request", i));
+      expect(text).not.toContain(marker("answer", i));
+    }
+    expect(text).toContain("Earlier in this session");
+  });
+
+  it("drops turns older than both the recent and condensed windows entirely", () => {
+    const history = Array.from({ length: 20 }, (_, i) =>
+      turn({ requestDescription: marker("request", i), finalText: marker("answer", i) })
+    );
+    const text = formatConversationHistory(history);
+    // Recent window: last 5 (15-19). Condensed window: the 10 before that (5-14). Turns 0-4 are
+    // older than both and should be gone completely.
+    for (const i of [0, 1, 2, 3, 4]) {
+      expect(text).not.toContain(marker("request", i));
+    }
+    expect(text).toContain(marker("request", 5));
+    expect(text).toContain(marker("request", 19));
+  });
+
+  it("omits the condensed section entirely when history fits within the recent window", () => {
+    const history = Array.from({ length: 3 }, (_, i) =>
+      turn({ requestDescription: marker("request", i), finalText: marker("answer", i) })
+    );
+    const text = formatConversationHistory(history);
+    expect(text).not.toContain("Earlier in this session");
   });
 
   it("truncates a long answer instead of including it in full", () => {
