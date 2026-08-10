@@ -103,4 +103,52 @@ describe("createReadFileTool", () => {
     const tool = createReadFileTool(workspace);
     await expect(tool.execute({ path: 123 })).rejects.toThrow();
   });
+
+  it("reads a specific line range from the middle of a file", async () => {
+    await writeFile(join(workspace, "lines.txt"), "line1\nline2\nline3\nline4\nline5\n");
+    const tool = createReadFileTool(workspace);
+
+    const result = await tool.execute({ path: "lines.txt", offset: 2, limit: 2 });
+
+    expect(result).toMatchObject({
+      contents: "line2\nline3\n",
+      truncated: false,
+      offset: 2,
+      limit: 2,
+      linesReturned: 2,
+    });
+  });
+
+  it("returns empty content, not an error, when offset is beyond the end of the file", async () => {
+    await writeFile(join(workspace, "lines.txt"), "line1\nline2\n");
+    const tool = createReadFileTool(workspace);
+
+    const result = await tool.execute({ path: "lines.txt", offset: 10 });
+
+    expect(result).toMatchObject({ contents: "", truncated: false, linesReturned: 0 });
+  });
+
+  it("returns through end of file when limit exceeds the remaining lines", async () => {
+    await writeFile(join(workspace, "lines.txt"), "line1\nline2\nline3\n");
+    const tool = createReadFileTool(workspace);
+
+    const result = await tool.execute({ path: "lines.txt", offset: 2, limit: 100 });
+
+    expect(result).toMatchObject({ contents: "line2\nline3\n", linesReturned: 2 });
+  });
+
+  it("matches default whole-file behavior exactly when offset/limit are omitted", async () => {
+    await writeFile(join(workspace, "lines.txt"), "line1\nline2\nline3\n");
+    const tool = createReadFileTool(workspace);
+
+    const withoutArgs = await tool.execute({ path: "lines.txt" });
+    const withDefaultOffset = await tool.execute({ path: "lines.txt", offset: 1 });
+
+    expect(withoutArgs).toEqual({
+      path: "lines.txt",
+      contents: "line1\nline2\nline3\n",
+      truncated: false,
+    });
+    expect(withDefaultOffset).toEqual(withoutArgs);
+  });
 });
