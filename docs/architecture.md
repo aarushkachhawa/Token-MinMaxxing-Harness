@@ -182,6 +182,35 @@ Anthropic-only, so the multi-provider half of this section (a real second `provi
 registry, a factory that dispatches across providers, arms actually seeded from `ModelRegistry`)
 remains open.
 
+## Prompt caching
+
+Every real Anthropic-backed client now marks its system prompt with an ephemeral cache breakpoint
+(`src/executor/prompt-caching.ts`: `cachedSystemPrompt`), and `AnthropicModelClient` additionally
+marks the last tool definition and the last message of each turn's conversation array
+(`withCacheBreakpointOnLastMessage`) -- the same incremental-caching pattern a real agent loop
+(e.g. Claude Code's own) relies on: each new turn in `Executor.run()`'s tool-use loop reads
+everything up through the *previous* turn's marked message back at the cheap cache-read rate and
+pays full price only for what's newly appended since then, instead of re-paying for the whole
+growing conversation on every single turn.
+
+**Verified live against the real API, with an honest caveat about when it actually engages.**
+A synthetic long system prompt confirmed the mechanism itself is correct end to end: call 1 wrote
+8,402 tokens to cache (`cache_creation_input_tokens`), call 2 read them back
+(`cache_read_input_tokens`) instead of paying full input price again. But Anthropic enforces a
+*minimum* cacheable prompt length -- 1024 tokens for Sonnet/Opus-class models, a stricter 2048 for
+Haiku-class -- and this harness's actual system prompts are short, single-paragraph instructions.
+Measuring the real system prompt + all 5 real tool schemas together (~1.6K tokens): on
+`claude-sonnet-5` this clears the 1024 minimum and caches correctly from turn 1 (confirmed:
+`cache_creation_input_tokens` on turn 1, `cache_read_input_tokens` on turn 2). On
+`claude-haiku-4-5` -- the default/cheap tier most subtasks actually route to -- the same prefix
+stays under the stricter 2048 minimum on early turns, so caching doesn't engage until a subtask's
+conversation grows large enough on its own (e.g. after reading a substantial file). This isn't a
+bug in the implementation; it's a real constraint of the underlying caching system, and it means
+the realized savings are currently concentrated in escalated/stronger-tier calls and longer
+tool-use loops, not the average short cheap-tier subtask. Lengthening the shared system prompts or
+tool descriptions to deliberately clear Haiku's threshold is a plausible follow-up, not attempted
+here since it would mean padding real content with tokens that exist only to unlock caching.
+
 ## Open design questions
 
 - **Provider abstraction**: the single-provider version of this is done -- `ModelClientFactory`
