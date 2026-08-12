@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { AnthropicClassifierClient, DEFAULT_CLASSIFICATION_RULES, TaskClassifier } from "./classifier/index.js";
 import { getAnthropicApiKey } from "./config/env.js";
 import { ContextCompiler, type SubtaskOutput } from "./context/index.js";
-import { AnthropicModelClient } from "./executor/anthropic-model-client.js";
+import { AnthropicModelClientFactory } from "./executor/anthropic-model-client-factory.js";
 import { AnthropicOrchestratorClient, Orchestrator } from "./orchestrator/index.js";
 import { loadRouterState, saveRouterState, SqliteRouterStore } from "./persistence/index.js";
 import { AnthropicJudgeClient } from "./reward/anthropic-judge-client.js";
@@ -26,6 +26,10 @@ import {
 } from "./tools/index.js";
 
 const ROUTER_STATE_PATH = join(process.cwd(), "router-state.sqlite");
+// Real, constructable model ids -- these ARE what gets registered as bandit arms below, so
+// whatever the router picks is what AnthropicModelClientFactory can actually build a client for.
+const FAST_CHEAP_MODEL_ID = "claude-haiku-4-5-20251001";
+const SMART_EXPENSIVE_MODEL_ID = "claude-sonnet-5";
 
 const SYSTEM_PROMPT =
   "You are a careful coding assistant working in this project's repository. Use " +
@@ -70,7 +74,7 @@ async function main() {
         console.log(`Judge verdict: ${verdict.score.toFixed(2)} (${verdict.confidence}) -- ${verdict.rationale}`),
     }),
   });
-  const modelClient = new AnthropicModelClient({ apiKey: getAnthropicApiKey() });
+  const modelClientFactory = new AnthropicModelClientFactory({ apiKey: getAnthropicApiKey() });
   // write_file here is scoped to this actual repository (not a scratch dir like
   // write-file-check.ts), so every write is gated on an interactive terminal approval that
   // prints the before/after content and defaults to refusing -- see write-approval-gate.ts.
@@ -86,7 +90,7 @@ async function main() {
     bandit,
     classifier,
     rewardCollector,
-    modelClient,
+    modelClientFactory,
     tools,
     contextCompiler,
     new AnthropicEscalationClient({ apiKey: getAnthropicApiKey() }),
@@ -99,8 +103,8 @@ async function main() {
       hybridRouterOptions: { minPullsBeforeConfident: 3 },
       onCategoryDiscovered: (category) => {
         if (bandit.getCandidates(category).length === 0) {
-          bandit.register(category, "fast-cheap", 0.01);
-          bandit.register(category, "smart-expensive", 0.3);
+          bandit.register(category, FAST_CHEAP_MODEL_ID, 0.01);
+          bandit.register(category, SMART_EXPENSIVE_MODEL_ID, 0.3);
         }
       },
     }

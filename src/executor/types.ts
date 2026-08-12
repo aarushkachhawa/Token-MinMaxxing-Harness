@@ -36,6 +36,16 @@ export interface ModelClient {
   generate(options: GenerateOptions): Promise<GenerateResult>;
 }
 
+/**
+ * Turns a router's chosen modelId into the real ModelClient that should actually execute against
+ * it -- the missing link between a routing *decision* and routing *taking effect*. Without this,
+ * a caller can only ever run every subtask against one fixed client regardless of what the bandit
+ * or escalation path picked; see SubtaskRunner.attempt(), the one place this gets called.
+ */
+export interface ModelClientFactory {
+  getClient(modelId: string): ModelClient;
+}
+
 export interface Tool {
   name: string;
   description: string;

@@ -2,7 +2,7 @@
 /**
  * Genuinely interactive terminal CLI for the real pipeline -- same wiring as demo-real.ts
  * (AnthropicOrchestratorClient, TaskClassifier, SqliteRouterStore-backed bandit, RewardCollector,
- * AnthropicModelClient, the three real tools, SubtaskRunner), but instead of running a single
+ * AnthropicModelClientFactory, the three real tools, SubtaskRunner), but instead of running a single
  * request from argv and exiting, it opens a REPL (`> `) that keeps the pipeline's long-lived
  * dependencies (router state, bandit, tools) alive across every request typed in, until /exit.
  * Also remembers the session's conversation so a follow-up like "now do the same for the other
@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { AnthropicClassifierClient, DEFAULT_CLASSIFICATION_RULES, TaskClassifier } from "./classifier/index.js";
 import { getAnthropicApiKey } from "./config/env.js";
 import { ContextCompiler, type SubtaskOutput } from "./context/index.js";
-import { AnthropicModelClient } from "./executor/anthropic-model-client.js";
+import { AnthropicModelClientFactory } from "./executor/anthropic-model-client-factory.js";
 import { type ConversationSummarizerClient, AnthropicConversationSummarizerClient } from "./memory/index.js";
 import {
   AnthropicOrchestratorClient,
@@ -44,6 +44,10 @@ try {
 }
 
 const ROUTER_STATE_PATH = join(process.cwd(), "router-state.sqlite");
+// Real, constructable model ids -- these ARE what gets registered as bandit arms below, so
+// whatever the router picks is what AnthropicModelClientFactory can actually build a client for.
+const FAST_CHEAP_MODEL_ID = "claude-haiku-4-5-20251001";
+const SMART_EXPENSIVE_MODEL_ID = "claude-sonnet-5";
 
 const SYSTEM_PROMPT =
   "You are a careful coding assistant working in this project's repository. Use " +
@@ -250,7 +254,7 @@ async function main() {
         ),
     }),
   });
-  const modelClient = new AnthropicModelClient({ apiKey: getAnthropicApiKey() });
+  const modelClientFactory = new AnthropicModelClientFactory({ apiKey: getAnthropicApiKey() });
   const tools = [
     createReadFileTool(process.cwd()),
     createListDirectoryTool(process.cwd()),
@@ -266,7 +270,7 @@ async function main() {
     bandit,
     classifier,
     rewardCollector,
-    modelClient,
+    modelClientFactory,
     tools,
     contextCompiler,
     new AnthropicEscalationClient({ apiKey: getAnthropicApiKey() }),
@@ -276,8 +280,8 @@ async function main() {
       hybridRouterOptions: { minPullsBeforeConfident: 3 },
       onCategoryDiscovered: (category) => {
         if (bandit.getCandidates(category).length === 0) {
-          bandit.register(category, "fast-cheap", 0.01);
-          bandit.register(category, "smart-expensive", 0.3);
+          bandit.register(category, FAST_CHEAP_MODEL_ID, 0.01);
+          bandit.register(category, SMART_EXPENSIVE_MODEL_ID, 0.3);
         }
       },
     }
