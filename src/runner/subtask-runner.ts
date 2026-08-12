@@ -2,7 +2,7 @@ import type { TaskClassifier } from "../classifier/task-classifier.js";
 import type { ContextCompiler } from "../context/context-compiler.js";
 import type { SubtaskOutput } from "../context/types.js";
 import { Executor } from "../executor/executor.js";
-import type { ModelClient, Tool } from "../executor/types.js";
+import type { ModelClientFactory, Tool } from "../executor/types.js";
 import type { Subtask } from "../orchestrator/types.js";
 import type { RewardCollector } from "../reward/reward-collector.js";
 import type { Router } from "../router/bandit.js";
@@ -29,13 +29,19 @@ interface Attempt {
  * tier" rather than an open-ended retry loop; both attempts' outcomes are reported to the
  * bandit either way, since a real failure is real training signal regardless of which attempt's
  * output ends up being used.
+ *
+ * Takes a ModelClientFactory, not a single ModelClient: attempt() below resolves the router's
+ * decision.modelId to a real client via the factory on every attempt, so the bandit/escalation
+ * choice actually determines what executes, not just what gets logged to reportOutcome(). A
+ * single fixed client here would make the whole router decorative -- every task would really be
+ * testing "can this one model solve it," regardless of what routing decided.
  */
 export class SubtaskRunner {
   constructor(
     private bandit: Router,
     private classifier: TaskClassifier,
     private rewardCollector: RewardCollector,
-    private modelClient: ModelClient,
+    private modelClientFactory: ModelClientFactory,
     private tools: Tool[],
     private contextCompiler: ContextCompiler,
     private escalationClient: EscalationClient,
@@ -85,7 +91,8 @@ export class SubtaskRunner {
     routeOptions: { forceEscalate: boolean }
   ): Promise<Attempt> {
     const decision = await router.route(category, subtask.description, routeOptions);
-    const executor = new Executor(this.modelClient, this.tools, {
+    const modelClient = this.modelClientFactory.getClient(decision.modelId);
+    const executor = new Executor(modelClient, this.tools, {
       maxTurns: this.options.executorMaxTurns,
     });
     const result = await executor.run(this.options.systemPrompt ?? DEFAULT_SYSTEM_PROMPT, prompt);

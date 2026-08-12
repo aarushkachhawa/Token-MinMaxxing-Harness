@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { GenerateOptions, GenerateResult, ModelClient, Tool } from "./types.js";
+import type { GenerateOptions, GenerateResult, ModelClient, ModelClientFactory, Tool } from "./types.js";
 
 /** Returns a fixed, scripted sequence of responses — one per call to generate(). */
 export class ScriptedModelClient implements ModelClient {
@@ -22,6 +22,27 @@ export class ScriptedModelClient implements ModelClient {
     }
     this.callCount++;
     return response;
+  }
+}
+
+/**
+ * Returns a fixed client per modelId (falling back to a shared default for any modelId without
+ * an override) -- lets a test either ignore which modelId got requested (the common case: just
+ * pass one fallback client) or assert that different modelIds actually route to different
+ * clients (the thing AnthropicModelClientFactory exists to guarantee for real).
+ */
+export class ScriptedModelClientFactory implements ModelClientFactory {
+  /** Every modelId requested via getClient(), in call order. */
+  requestedModelIds: string[] = [];
+
+  constructor(
+    private fallback: ModelClient,
+    private overrides: Map<string, ModelClient> = new Map()
+  ) {}
+
+  getClient(modelId: string): ModelClient {
+    this.requestedModelIds.push(modelId);
+    return this.overrides.get(modelId) ?? this.fallback;
   }
 }
 

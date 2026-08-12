@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { TaskClassifier } from "../classifier/task-classifier.js";
 import { ContextCompiler } from "../context/context-compiler.js";
 import type { SubtaskOutput } from "../context/types.js";
-import { fakeTool, ScriptedModelClient } from "../executor/fakes.js";
-import type { GenerateResult } from "../executor/types.js";
+import { fakeTool, ScriptedModelClient, ScriptedModelClientFactory } from "../executor/fakes.js";
+import type { GenerateResult, ModelClient } from "../executor/types.js";
 import type { Subtask } from "../orchestrator/types.js";
 import { RewardCollector } from "../reward/reward-collector.js";
 import { Router } from "../router/bandit.js";
@@ -35,11 +35,14 @@ function makeRunner(
 ): SubtaskRunner {
   const classifier = new TaskClassifier({ rules: [{ category: CATEGORY, keywords: ["task"] }] });
   const goodTool = fakeTool("good_tool", async () => ({ ok: true }));
+  // A single fallback client serves every modelId -- these tests care about the retry/reward
+  // logic, not about which modelId got requested (see the dedicated "routes to a different
+  // client" test below for that).
   return new SubtaskRunner(
     bandit,
     classifier,
     new RewardCollector(),
-    client,
+    new ScriptedModelClientFactory(client),
     [goodTool],
     new ContextCompiler(),
     new ScriptedEscalationClient([escalationChoice]),
@@ -82,6 +85,92 @@ describe("SubtaskRunner", () => {
     expect(result.escalatedAfterFailure).toBe(true);
     expect(result.output.finalText).toBe("fixed on retry");
     expect(result.reward).toBe(1);
+  });
+
+  it("regression: actually executes against the client for the modelId the router chose, not one fixed client", async () => {
+    // Before the fix, SubtaskRunner used decision.modelId only to report the outcome back to the
+    // bandit -- the Executor always ran against whatever single ModelClient was injected at
+    // construction, so the router's choice never affected what actually ran. This forces
+    // escalation (highRisk) so the decision is deterministic ("strong", via
+    // ScriptedEscalationClient) and asserts the STRONG client -- not the fast one -- is the one
+    // that actually received the call and produced the output.
+    const fastClient = new ScriptedModelClient([textResult("fast answer")]);
+    const strongClient = new ScriptedModelClient([textResult("strong answer")]);
+    const factory = new ScriptedModelClientFactory(
+      fastClient,
+      new Map<string, ModelClient>([["strong", strongClient]])
+    );
+    const bandit = new Router();
+    const classifier = new TaskClassifier({ rules: [{ category: CATEGORY, keywords: ["task"] }] });
+    const runner = new SubtaskRunner(
+      bandit,
+      classifier,
+      new RewardCollector(),
+      factory,
+      [fakeTool("good_tool", async () => ({ ok: true }))],
+      new ContextCompiler(),
+      new ScriptedEscalationClient(["strong"]),
+      {
+        executorMaxTurns: 1,
+        hybridRouterOptions: { minPullsBeforeConfident: 0 },
+        onCategoryDiscovered: (category) => {
+          if (bandit.getCandidates(category).length === 0) {
+            bandit.register(category, "fast", 0.01);
+            bandit.register(category, "strong", 0.3);
+          }
+        },
+      }
+    );
+
+    const result = await runner.run(subtask({ id: "a", highRisk: true }), new Map());
+
+    expect(factory.requestedModelIds).toEqual(["strong"]);
+    expect(strongClient.receivedOptions).toHaveLength(1);
+    expect(fastClient.receivedOptions).toHaveLength(0);
+    expect(result.output.finalText).toBe("strong answer");
+  });
+
+  it("regression: a failed first attempt's escalated retry dispatches to the newly-chosen model's client, not a repeat of the first", async () => {
+    // Cold-start (huge minPullsBeforeConfident) forces attempt 1 through escalation too, so both
+    // attempts' model choices are scripted/deterministic instead of left to Thompson sampling --
+    // attempt 1 gets "fast" and fails (hits maxTurns), the retry gets "strong" and succeeds.
+    // Before the fix, both attempts would have run against the same fixed client regardless of
+    // which modelId either decision actually named.
+    const fastClient = new ScriptedModelClient([toolCallResult("good_tool")]); // hits maxTurns=1, never finishes
+    const strongClient = new ScriptedModelClient([textResult("fixed by strong")]);
+    const factory = new ScriptedModelClientFactory(
+      fastClient,
+      new Map<string, ModelClient>([["strong", strongClient]])
+    );
+    const bandit = new Router();
+    const classifier = new TaskClassifier({ rules: [{ category: CATEGORY, keywords: ["task"] }] });
+    const runner = new SubtaskRunner(
+      bandit,
+      classifier,
+      new RewardCollector(),
+      factory,
+      [fakeTool("good_tool", async () => ({ ok: true }))],
+      new ContextCompiler(),
+      new ScriptedEscalationClient(["fast", "strong"]),
+      {
+        executorMaxTurns: 1,
+        hybridRouterOptions: { minPullsBeforeConfident: 1_000_000 },
+        onCategoryDiscovered: (category) => {
+          if (bandit.getCandidates(category).length === 0) {
+            bandit.register(category, "fast", 0.01);
+            bandit.register(category, "strong", 0.3);
+          }
+        },
+      }
+    );
+
+    const result = await runner.run(subtask({ id: "a" }), new Map());
+
+    expect(factory.requestedModelIds).toEqual(["fast", "strong"]);
+    expect(fastClient.receivedOptions).toHaveLength(1);
+    expect(strongClient.receivedOptions).toHaveLength(1);
+    expect(result.escalatedAfterFailure).toBe(true);
+    expect(result.output.finalText).toBe("fixed by strong");
   });
 
   it("keeps the first attempt's output if the escalated retry is actually worse", async () => {
@@ -152,7 +241,7 @@ describe("SubtaskRunner", () => {
       bandit,
       classifier,
       new RewardCollector(),
-      client,
+      new ScriptedModelClientFactory(client),
       [fakeTool("good_tool", async () => ({ ok: true }))],
       new ContextCompiler(),
       new ScriptedEscalationClient(["strong"]),

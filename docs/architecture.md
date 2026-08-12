@@ -165,12 +165,29 @@ is known to have changed.
 
 Workers are config-driven entries — `{provider, model_id, cost per token, capability tier, context
 limit}` — behind a unified call interface, so adding a new model (local, another API provider, or
-Anthropic) is a registry entry, not new routing code.
+Anthropic) is a registry entry, not new routing code. `src/registry/` (`ModelRegistry`,
+`seedRouterFromRegistry`) provides this metadata layer, but `cli.ts`/`demo-real.ts`/`stress-test.ts`
+don't source their bandit arms from it yet -- they register two hardcoded Anthropic model ids
+directly. What those three *do* now have is `ModelClientFactory`
+(`src/executor/anthropic-model-client-factory.ts`): `SubtaskRunner.attempt()` resolves the router's
+`decision.modelId` to a real client through it on every attempt, so the routing decision actually
+determines what executes. Before this, `SubtaskRunner` ran every subtask against one client fixed
+at construction time regardless of what the bandit or escalation path chose -- `decision.modelId`
+only ever reached `reportOutcome()`'s bookkeeping, so every run was really testing "can this one
+model solve it," not whether routing helped. Verified live: a trivial request correctly stayed on
+the cheap tier (the escalation client itself judged the stronger model unnecessary), and a
+genuinely harder one escalated to and executed against the stronger model for real, producing
+visibly more sophisticated output than the cheap tier would. `ModelClientFactory` is still
+Anthropic-only, so the multi-provider half of this section (a real second `provider` in the
+registry, a factory that dispatches across providers, arms actually seeded from `ModelRegistry`)
+remains open.
 
 ## Open design questions
 
-- **Provider abstraction**: build the multi-provider call layer directly, or sit on top of an
-  existing library (e.g. litellm) and only own the registry/router/bandit logic on top.
+- **Provider abstraction**: the single-provider version of this is done -- `ModelClientFactory`
+  (see Multi-provider model registry above) turns a router decision into the real Anthropic client
+  that executes it. What's still open is multi-*provider*: build that call layer directly, or sit
+  on top of an existing library (e.g. litellm) and only own the registry/router/bandit logic on top.
 - **Hierarchical priors**: a low-traffic category currently starts from a flat optimistic prior;
   sharing a prior derived from global cross-category stats would reduce cold-start pain without
   exploding arm granularity.
