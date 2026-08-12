@@ -286,13 +286,15 @@ function truncate(text: string, maxLength: number): string {
  *
  * Two tiers, so a turn aging out of the recent window isn't just forgotten outright: the last
  * MAX_HISTORY_TURNS turns appear in full (request + truncated answer); up to MAX_CONDENSED_TURNS
- * turns older than that get a condensed request-only mention (no answer text at all -- a few words
- * each, not another few hundred tokens); anything older than both windows is genuinely dropped.
- * This keeps prompt growth bounded even across a very long session while still leaving *some*
+ * turns older than that get a condensed mention -- turn.summary if a caller has already run it
+ * through a ConversationSummarizerClient (see findTurnsNeedingSummary below), otherwise a plain
+ * truncated request-only fallback; anything older than both windows is genuinely dropped. This
+ * keeps prompt growth bounded even across a very long session while still leaving *some*
  * referential thread beyond the last few turns for triage/structure to resolve against.
  *
- * Exported (pure, no model calls) so this formatting can be unit tested directly, matching the
- * formatWriteApprovalPrompt/formatJudgePrompt split elsewhere in this codebase.
+ * Exported (pure, no model calls -- reads turn.summary if present, never computes it) so this
+ * formatting can be unit tested directly, matching the formatWriteApprovalPrompt/formatJudgePrompt
+ * split elsewhere in this codebase.
  */
 export function formatConversationHistory(history: ConversationTurn[]): string {
   if (history.length === 0) return "";
@@ -304,8 +306,8 @@ export function formatConversationHistory(history: ConversationTurn[]): string {
   const condensedLine =
     condensed.length > 0
       ? `Earlier in this session (condensed, oldest first): ${condensed
-          .map((turn) => `"${truncate(turn.requestDescription, 100)}"`)
-          .join("; ")}\n\n`
+          .map((turn) => truncate(turn.summary ?? turn.requestDescription, 150))
+          .join(" | ")}\n\n`
       : "";
 
   const turns = recent
@@ -320,4 +322,21 @@ export function formatConversationHistory(history: ConversationTurn[]): string {
     `Conversation so far in this session (context only -- the new request below is what you're ` +
     `actually deciding on):\n\n${condensedLine}${turns}\n\n---\n\n`
   );
+}
+
+/**
+ * Turns that have just aged into the condensed tier (per formatConversationHistory's windowing)
+ * but don't yet have a summary -- exactly the ones a caller should run through a
+ * ConversationSummarizerClient before the next render, so the condensed mention can be a real
+ * summary instead of the bare request-text fallback. A turn already past the condensed window
+ * (fully dropped from rendering) is excluded too, since summarizing it would never be seen.
+ *
+ * Pure, no model calls -- summarizing itself is the caller's job (see AnthropicConversationSummarizerClient
+ * in src/memory/), this only identifies which turns need it. Idempotent: once a turn has a
+ * summary, it's never returned again.
+ */
+export function findTurnsNeedingSummary(history: ConversationTurn[]): ConversationTurn[] {
+  const olderThanRecent = history.slice(0, Math.max(0, history.length - MAX_HISTORY_TURNS));
+  const condensed = olderThanRecent.slice(-MAX_CONDENSED_TURNS);
+  return condensed.filter((turn) => !turn.summary);
 }

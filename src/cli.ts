@@ -17,7 +17,13 @@ import { AnthropicClassifierClient, DEFAULT_CLASSIFICATION_RULES, TaskClassifier
 import { getAnthropicApiKey } from "./config/env.js";
 import { ContextCompiler, type SubtaskOutput } from "./context/index.js";
 import { AnthropicModelClient } from "./executor/anthropic-model-client.js";
-import { AnthropicOrchestratorClient, Orchestrator, type ConversationTurn } from "./orchestrator/index.js";
+import { type ConversationSummarizerClient, AnthropicConversationSummarizerClient } from "./memory/index.js";
+import {
+  AnthropicOrchestratorClient,
+  findTurnsNeedingSummary,
+  Orchestrator,
+  type ConversationTurn,
+} from "./orchestrator/index.js";
 import { loadRouterState, saveRouterState, SqliteRouterStore } from "./persistence/index.js";
 import { AnthropicJudgeClient } from "./reward/anthropic-judge-client.js";
 import { RewardCollector } from "./reward/reward-collector.js";
@@ -69,6 +75,7 @@ interface PipelineDeps {
    * one runRequest() call is ever in flight at a time so there's no risk of it being stale.
    */
   lastTriage: { worthRemembering: boolean };
+  summarizer: ConversationSummarizerClient;
 }
 
 function printHelp(): void {
@@ -102,7 +109,8 @@ function printHelp(): void {
  * for where that history actually gets used (triage/explore/structure prompts).
  */
 async function runRequest(requestDescription: string, deps: PipelineDeps): Promise<void> {
-  const { orchestratorClient, routerStore, bandit, runner, progressUI, conversationHistory, lastTriage } = deps;
+  const { orchestratorClient, routerStore, bandit, runner, progressUI, conversationHistory, lastTriage, summarizer } =
+    deps;
 
   try {
     progressUI.start("Thinking...");
@@ -168,6 +176,28 @@ async function runRequest(requestDescription: string, deps: PipelineDeps): Promi
     // potentially confuse a later "it"/"that" in an unrelated follow-up.
     if (lastTriage.worthRemembering) {
       conversationHistory.push({ requestDescription, finalText });
+    }
+
+    // Runs after the answer is already on screen, so this never delays it -- a turn that just
+    // aged out of formatConversationHistory's recent-detail window gets compressed into a real
+    // summary (once, cached on the turn itself) instead of falling back to a bare request-only
+    // mention. Best-effort: a failure here just leaves the cheaper fallback in place for this
+    // render, and the turn will be retried the next time something ages out.
+    const needsSummary = findTurnsNeedingSummary(conversationHistory);
+    if (needsSummary.length > 0) {
+      try {
+        progressUI.start("Compacting older context...");
+        for (const turn of needsSummary) {
+          turn.summary = await summarizer.summarize(turn);
+        }
+      } catch (err) {
+        console.error(
+          "Warning: conversation summarization failed, keeping the plain-text fallback:",
+          err instanceof Error ? err.message : err
+        );
+      } finally {
+        progressUI.stop();
+      }
     }
   } finally {
     // Safety net: if something threw mid-phase, this guarantees the spinner/raw mode gets torn
@@ -254,6 +284,7 @@ async function main() {
   );
 
   const conversationHistory: ConversationTurn[] = [];
+  const summarizer = new AnthropicConversationSummarizerClient({ apiKey: getAnthropicApiKey() });
   const deps: PipelineDeps = {
     orchestratorClient,
     classifier,
@@ -263,6 +294,7 @@ async function main() {
     progressUI,
     conversationHistory,
     lastTriage,
+    summarizer,
   };
 
   const cleanup = () => {
