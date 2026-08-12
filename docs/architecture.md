@@ -48,9 +48,18 @@ correctly at the lowest cost, learning that assignment over time instead of hard
    the session's history afterward, so an unrelated tangent can't later confuse an "it"/"that" it
    has nothing to do with. Second, `formatConversationHistory()` uses two tiers rather than a single
    hard cutoff: the last 5 turns appear in full (request + truncated answer), the next 10 turns
-   older than that get condensed to a request-only mention (no answer text — a few words, not a few
-   hundred tokens), and anything older than both is genuinely dropped. A turn aging out of full
-   detail still leaves a trace instead of vanishing outright.
+   older than that get condensed, and anything older than both is genuinely dropped. A turn aging
+   out of full detail still leaves a trace instead of vanishing outright.
+
+   The condensed tier's mention is a real LLM summary, not just the bare request text: the first
+   time a turn crosses from the recent into the condensed window, `src/cli.ts` runs it through
+   `AnthropicConversationSummarizerClient` (`src/memory/`) — a cheap model (haiku by default, since
+   compressing a turn that's about to leave full detail is exactly the low-stakes, high-volume task
+   this harness's whole premise says shouldn't burn a strong one) — and caches the one-sentence
+   result on the turn itself (`ConversationTurn.summary`), never recomputing it. This runs *after*
+   the turn's own answer is already on screen, so it never delays what the user is waiting for, and
+   it fails soft: if the summarization call errors, that turn just keeps using the plain request-text
+   fallback for this render and gets retried the next time something ages out.
 2. **Task classifier** — labels each subtask against a configurable category taxonomy (e.g.
    `trivial-lookup`, `small-edit`, `multi-file-refactor`, `test-authoring`, `exploration`). Cheap
    heuristics first, LLM fallback only when ambiguous, so classification itself doesn't burn budget.

@@ -1,6 +1,7 @@
 export {
   AnthropicOrchestratorClient,
   type AnthropicOrchestratorClientOptions,
+  findTurnsNeedingSummary,
   formatConversationHistory,
   type TriageResult,
 } from "./anthropic-orchestrator-client.js";

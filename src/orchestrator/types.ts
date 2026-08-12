@@ -16,6 +16,13 @@ export interface SubtaskPlan {
 export interface ConversationTurn {
   requestDescription: string;
   finalText: string;
+  /**
+   * Set once, lazily, the moment this turn ages out of formatConversationHistory's recent-detail
+   * window (see findTurnsNeedingSummary) -- a dense one-sentence LLM summary used for the
+   * condensed-tier mention in place of the bare request text. Undefined until then, and never
+   * recomputed afterward.
+   */
+  summary?: string;
 }
 
 export interface OrchestratorRequest {
