@@ -3,6 +3,7 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { AnthropicModelClient } from "../executor/anthropic-model-client.js";
 import { Executor } from "../executor/executor.js";
+import { cachedSystemPrompt } from "../executor/prompt-caching.js";
 import { createListDirectoryTool, createReadFileTool } from "../tools/index.js";
 import type { ConversationTurn, OrchestratorClient, OrchestratorRequest, ReplanContext, SubtaskPlan } from "./types.js";
 
@@ -233,7 +234,7 @@ the new subtasks needed, or an empty list if none are needed.`;
     const { object } = await generateObject({
       model: this.model,
       schema: replanSchema,
-      system: REPLAN_SYSTEM_PROMPT,
+      system: cachedSystemPrompt(REPLAN_SYSTEM_PROMPT),
       prompt,
     });
     return object;
@@ -243,7 +244,7 @@ the new subtasks needed, or an empty list if none are needed.`;
     const { object } = await generateObject({
       model: this.model,
       schema: triageSchema,
-      system: TRIAGE_SYSTEM_PROMPT,
+      system: cachedSystemPrompt(TRIAGE_SYSTEM_PROMPT),
       prompt: `${historyText}Request: ${requestDescription}`,
     });
     return object;
@@ -267,7 +268,7 @@ the new subtasks needed, or an empty list if none are needed.`;
     const { object } = await generateObject({
       model: this.model,
       schema: planSchema,
-      system: STRUCTURE_SYSTEM_PROMPT,
+      system: cachedSystemPrompt(STRUCTURE_SYSTEM_PROMPT),
       prompt,
     });
     return object;

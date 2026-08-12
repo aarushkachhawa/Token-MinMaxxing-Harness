@@ -1,6 +1,7 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { z } from "zod";
+import { cachedSystemPrompt } from "../executor/prompt-caching.js";
 import type { ClassifierClient, ClassifierRequest } from "./types.js";
 
 export interface AnthropicClassifierClientOptions {
@@ -40,7 +41,7 @@ export class AnthropicClassifierClient implements ClassifierClient {
     const { object } = await generateObject({
       model: this.model,
       schema,
-      system: SYSTEM_PROMPT,
+      system: cachedSystemPrompt(SYSTEM_PROMPT),
       prompt: formatClassifierPrompt(request),
     });
     return object.category;

@@ -1,6 +1,7 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { z } from "zod";
+import { cachedSystemPrompt } from "../executor/prompt-caching.js";
 import type { TraceEntry } from "../executor/types.js";
 import { JUDGE_RUBRIC } from "./judge-rubric.js";
 import type { JudgeClient, JudgeRequest } from "./types.js";
@@ -56,7 +57,7 @@ export class AnthropicJudgeClient implements JudgeClient {
     const { object } = await generateObject({
       model: this.model,
       schema: verdictSchema,
-      system: JUDGE_RUBRIC,
+      system: cachedSystemPrompt(JUDGE_RUBRIC),
       prompt: formatJudgePrompt(request),
     });
 

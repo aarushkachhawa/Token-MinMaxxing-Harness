@@ -5,6 +5,11 @@ export {
 export { AnthropicModelClient, type AnthropicModelClientOptions } from "./anthropic-model-client.js";
 export { Executor } from "./executor.js";
 export { fakeTool, ScriptedModelClient, ScriptedModelClientFactory } from "./fakes.js";
+export {
+  cachedSystemPrompt,
+  EPHEMERAL_CACHE_CONTROL,
+  withCacheBreakpointOnLastMessage,
+} from "./prompt-caching.js";
 export type {
   ExecutionResult,
   ExecutorOptions,

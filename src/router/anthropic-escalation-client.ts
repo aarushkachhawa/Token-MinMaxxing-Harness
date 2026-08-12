@@ -1,6 +1,7 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { z } from "zod";
+import { cachedSystemPrompt } from "../executor/prompt-caching.js";
 import type { EscalationClient, EscalationRequest } from "./escalation.js";
 
 export interface AnthropicEscalationClientOptions {
@@ -43,7 +44,7 @@ export class AnthropicEscalationClient implements EscalationClient {
     const { object } = await generateObject({
       model: this.model,
       schema,
-      system: SYSTEM_PROMPT,
+      system: cachedSystemPrompt(SYSTEM_PROMPT),
       prompt: formatEscalationPrompt(request),
     });
     return object.modelId;

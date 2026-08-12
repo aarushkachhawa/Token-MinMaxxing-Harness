@@ -1,5 +1,6 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { generateText } from "ai";
+import { cachedSystemPrompt } from "../executor/prompt-caching.js";
 import type { ConversationTurn } from "../orchestrator/types.js";
 import type { ConversationSummarizerClient } from "./types.js";
 
@@ -38,7 +39,7 @@ export class AnthropicConversationSummarizerClient implements ConversationSummar
   async summarize(turn: ConversationTurn): Promise<string> {
     const { text } = await generateText({
       model: this.model,
-      system: SUMMARIZER_SYSTEM_PROMPT,
+      system: cachedSystemPrompt(SUMMARIZER_SYSTEM_PROMPT),
       prompt: formatSummarizationPrompt(turn),
     });
     return text.trim();
