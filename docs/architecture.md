@@ -219,6 +219,33 @@ remains open.
   for an explicit y/yes, defaulting to refuse on anything else. This is a human-in-the-loop gate
   sized for interactive demo/stress runs; an unattended real-repo run would need a different one
   (allowlist rules, diff-size limits) since there's no human to answer the prompt.
-- **`delete_file` and any shell/command tool are not built**: `write_file`'s denylist/containment/
-  approval-hook pattern is the template if/when a delete tool is added, but deletion and arbitrary
-  command execution are their own risk categories, not just "write_file but more so."
+- **`delete_file` is still not built**: `write_file`'s denylist/containment/approval-hook pattern
+  is the template if/when it is; deletion is its own risk category (irreversible), not just
+  "write_file but more so."
+- **A real shell/command tool now exists (`run_command`, `src/tools/run-command.ts`)**: the gap
+  that let a model declare a task "done" without ever running the code it wrote or the tests
+  meant to check it -- a benchmark pilot run against SWE-bench Lite surfaced three unresolved
+  instances that traced directly back to this: reward being structurally blind to correctness
+  because nothing could execute anything. Deliberately shaped like a real Bash tool (arbitrary
+  command, not a narrow test-runner allowlist) rather than a narrower "safer" allowlist -- this
+  is a genuinely different risk category from read/list/write/edit, which are contained by
+  realpath-based path checks that make escaping the workspace structurally impossible. A shell
+  command can't be contained that way; the cwd is pinned to the workspace root and a short
+  denylist catches unambiguously destructive patterns (`sudo`, `rm -rf /`, a fork bomb, `dd` to a
+  raw device), but neither is a real security boundary the way path containment is. Real isolation
+  has to come from how the caller runs this (a disposable per-instance checkout, nothing sensitive
+  reachable from the process), not from anything the tool itself does. Same interactive-approval
+  pattern as `write_file` in `cli.ts`/`demo-real.ts`/`stress-test.ts`; `run-instance.ts` (the
+  benchmark harness) omits the approval hook the same way it already omits `write_file`'s, since
+  an unattended run has no human to ask.
+- **`edit_file` (`src/tools/edit-file.ts`), a targeted search-replace tool**: `write_file`
+  requires the entire file's content on every call, so a small requested change to a large file
+  means the model has to faithfully reproduce every other line untouched -- the same pilot run
+  had a case where that reproduction silently failed on a cheap model and collapsed a 2,328-line
+  file to 3, deleting several class definitions the hidden test suite then failed to even import.
+  `edit_file` takes `old_string`/`new_string` instead of full content (plain search-replace,
+  matching Claude Code's own Edit tool -- a diff format's line numbers and hunk headers are
+  exactly the kind of thing a weaker model gets subtly wrong). `old_string` must match exactly
+  once in the file; zero or multiple matches are rejected rather than guessed at, since a wrong
+  guess here is the same silent-corruption failure shape this tool exists to prevent. Same
+  containment/denylist/approval-hook shape as `write_file`.

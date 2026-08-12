@@ -19,9 +19,13 @@ import { RewardCollector } from "./reward/reward-collector.js";
 import { AnthropicEscalationClient } from "./router/anthropic-escalation-client.js";
 import { SubtaskRunner } from "./runner/index.js";
 import {
+  createEditFileTool,
   createListDirectoryTool,
   createReadFileTool,
+  createRunCommandTool,
   createWriteFileTool,
+  interactiveEditApprovalGate,
+  interactiveRunCommandApprovalGate,
   interactiveWriteApprovalGate,
 } from "./tools/index.js";
 
@@ -35,10 +39,14 @@ const SYSTEM_PROMPT =
   "You are a careful coding assistant working in this project's repository. Use " +
   "list_directory to explore the project structure and read_file to see a file's contents " +
   "(both take paths relative to the project root) -- don't assume a file exists if you " +
-  "haven't found or read it. write_file is available to create or overwrite files, but every " +
-  "write requires explicit human approval before it takes effect, so don't be surprised if a " +
-  "write is rejected. If prior work is provided below, treat it as established fact rather " +
-  "than re-investigating it. Be brief.";
+  "haven't found or read it. Prefer edit_file for a targeted change to an existing file -- it " +
+  "only needs the exact excerpt that's changing, not the whole file; use write_file only to " +
+  "create a new file or replace one entirely. run_command runs a shell command in the project " +
+  "root -- use it to actually run tests, check that something imports cleanly, or reproduce a " +
+  "bug before you claim it's fixed. A fix you never ran is not a finished task. Every write, " +
+  "edit, or command requires explicit human approval before it takes effect, so don't be " +
+  "surprised if one is rejected. If prior work is provided below, treat it as established fact " +
+  "rather than re-investigating it. Be brief.";
 
 async function main() {
   const requestDescription = process.argv[2] ?? "explain what the ContextCompiler does";
@@ -75,13 +83,15 @@ async function main() {
     }),
   });
   const modelClientFactory = new AnthropicModelClientFactory({ apiKey: getAnthropicApiKey() });
-  // write_file here is scoped to this actual repository (not a scratch dir like
-  // write-file-check.ts), so every write is gated on an interactive terminal approval that
-  // prints the before/after content and defaults to refusing -- see write-approval-gate.ts.
+  // write_file/edit_file/run_command here are scoped to this actual repository (not a scratch
+  // dir like write-file-check.ts), so every write, edit, or command is gated on an interactive
+  // terminal approval that defaults to refusing -- see the *-approval-gate.ts files.
   const tools = [
     createReadFileTool(process.cwd()),
     createListDirectoryTool(process.cwd()),
     createWriteFileTool(process.cwd(), { onBeforeWrite: interactiveWriteApprovalGate }),
+    createEditFileTool(process.cwd(), { onBeforeWrite: interactiveEditApprovalGate }),
+    createRunCommandTool(process.cwd(), { onBeforeExecute: interactiveRunCommandApprovalGate }),
   ];
   const contextCompiler = new ContextCompiler();
   const outputs = new Map<string, SubtaskOutput>();
