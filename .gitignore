@@ -3,3 +3,7 @@ dist/
 *.tsbuildinfo
 .env
 *.sqlite
+
+# SWE-bench grading artifacts (swebench.harness.run_evaluation writes these to cwd by default)
+/logs/
+/*.*.json
