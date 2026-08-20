@@ -1,98 +1,81 @@
-import { clearLine, cursorTo } from "node:readline";
+import { theme } from "./cli-theme.js";
 
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const SPINNER_INTERVAL_MS = 80;
 const MIN_CONTENT_WIDTH = 20;
 const MAX_CONTENT_WIDTH = 96;
 const CTRL_C = 3;
 
 /**
- * A collapsible progress indicator for one in-flight request: a self-updating spinner + current
- * step label by default, expandable (press 'e') into a bordered, append-only box of every
- * detailed progress line seen so far. "Scrolling" the box is just the terminal's own native
- * scrollback -- there's no custom viewport -- which keeps this simple and avoids re-implementing
- * a scroll region.
+ * A step-by-step progress indicator for one in-flight request: prints one colored line each time
+ * the current step actually changes, plus an optional expandable box (press 'e', only available
+ * when stdin is a real TTY) with every detail line logged along the way.
  *
- * Only animates/listens for keypresses when both stdin and stdout are real TTYs; falls back to
- * plain sequential console.log lines for piped/non-interactive output (redirected to a file, a
- * test harness, etc.), where raw-mode keypress handling and \r-based redraws don't apply.
+ * Earlier versions tried to redraw a single line in place instead of printing a new one per step
+ * -- first via `readline`'s clearLine()/cursorTo() ANSI escape sequences, then via a plain `\r`
+ * carriage return. Both failed in terminal front-ends that don't interpret cursor-control
+ * characters at all: instead of overwriting, every tick just concatenated onto one unbroken line,
+ * which is worse than the plain-lines problem either was meant to fix. Printing one real line per
+ * distinct step change is the only technique that's guaranteed correct in *any* text-consuming
+ * environment, real terminal or not, since it depends on nothing but `\n` -- there's no
+ * animation to lose, just a short, readable log of the phases a request actually went through.
  */
 export class ProgressUI {
-  private readonly interactive: boolean;
-  private frameIndex = 0;
-  private timer: NodeJS.Timeout | null = null;
+  private readonly canListenForKeypress: boolean;
   private step = "";
   private expanded = false;
   private boxOpen = false;
   private rawModeActive = false;
 
   constructor() {
-    this.interactive = Boolean(process.stdout.isTTY && process.stdin.isTTY);
+    this.canListenForKeypress = Boolean(process.stdout.isTTY && process.stdin.isTTY);
   }
 
   start(initialStep: string): void {
-    this.step = initialStep;
+    this.step = "";
     this.expanded = false;
     this.boxOpen = false;
-    if (!this.interactive) {
-      console.log(initialStep);
-      return;
-    }
     this.enableKeypress();
-    this.paintCollapsed();
-    this.startTimer();
+    this.setStep(initialStep);
   }
 
-  /** Updates the short label shown on the collapsed spinner line. */
+  /** Prints a new line for the current step -- a no-op if it hasn't actually changed. */
   setStep(step: string): void {
+    if (step === this.step) return;
     this.step = step;
-    if (!this.interactive) {
-      console.log(step);
-      return;
-    }
     if (this.expanded) {
       this.writeBoxLine(step);
     } else {
-      this.paintCollapsed();
+      const hint = this.canListenForKeypress ? theme.dim("  (press e to expand)") : "";
+      console.log(`${theme.neon("›")} ${step}${hint}`);
     }
   }
 
   /** A detail line that only ever appears in the expanded box, never on the collapsed line. */
   log(line: string): void {
-    if (!this.interactive) {
-      console.log(line);
-      return;
-    }
     if (this.expanded) {
       this.writeBoxLine(line);
     }
   }
 
   /**
-   * Stops the spinner/keypress listener and closes the box border (if open) so the terminal is
-   * back to normal cooked-mode, print-as-usual state. Safe to call even if never started, or
-   * already stopped -- every phase of a request calls this between steps, and callers should also
-   * call it in a `finally` as a safety net so a mid-phase exception can't leave raw mode stuck on.
+   * Closes the box border (if open) and disables the keypress listener. Safe to call even if
+   * never started, or already stopped -- every phase of a request calls this between steps, and
+   * callers should also call it in a `finally` as a safety net so a mid-phase exception can't
+   * leave raw mode stuck on.
    */
   stop(): void {
-    if (!this.interactive) return;
-    this.stopTimer();
     this.closeBoxIfNeeded();
-    if (!this.expanded) this.clearCollapsedLine();
     this.disableKeypress();
   }
 
   /**
    * Yields the terminal to a nested prompt (e.g. the write-approval gate's own readline) for the
-   * duration of `fn`: stops animating and releases raw mode first, restores afterward. Needed so
-   * the spinner and a nested cooked-mode prompt never fight over stdin at the same time.
+   * duration of `fn`: closes the box and releases raw mode first, restores both afterward. Needed
+   * so an open box border and a nested cooked-mode prompt never fight over stdin/stdout at the
+   * same time.
    */
   async withPaused<T>(fn: () => Promise<T>): Promise<T> {
-    if (!this.interactive) return fn();
     const wasExpanded = this.expanded;
-    this.stopTimer();
     this.closeBoxIfNeeded();
-    this.clearCollapsedLine();
     this.disableKeypress();
     try {
       return await fn();
@@ -101,72 +84,43 @@ export class ProgressUI {
       this.enableKeypress();
       if (this.expanded) {
         this.writeBoxLine(this.step);
-      } else {
-        this.paintCollapsed();
       }
-      this.startTimer();
     }
   }
 
   private toggleExpand(): void {
     this.expanded = !this.expanded;
     if (this.expanded) {
-      this.clearCollapsedLine();
       this.writeBoxLine(this.step);
     } else {
       this.closeBoxIfNeeded();
-      this.paintCollapsed();
-    }
-  }
-
-  private startTimer(): void {
-    this.timer = setInterval(() => {
-      this.frameIndex = (this.frameIndex + 1) % SPINNER_FRAMES.length;
-      if (!this.expanded) this.paintCollapsed();
-    }, SPINNER_INTERVAL_MS);
-  }
-
-  private stopTimer(): void {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
     }
   }
 
   private openBoxIfNeeded(): void {
     if (this.boxOpen) return;
-    process.stdout.write(`┌${"─".repeat(this.contentWidth() + 2)}┐\n`);
+    process.stdout.write(theme.neon(`┌${"─".repeat(this.contentWidth() + 2)}┐`) + "\n");
     this.boxOpen = true;
   }
 
   private closeBoxIfNeeded(): void {
     if (!this.boxOpen) return;
-    process.stdout.write(`└${"─".repeat(this.contentWidth() + 2)}┘\n`);
+    process.stdout.write(theme.neon(`└${"─".repeat(this.contentWidth() + 2)}┘`) + "\n");
     this.boxOpen = false;
   }
 
   private writeBoxLine(text: string): void {
     this.openBoxIfNeeded();
     const width = this.contentWidth();
+    const border = theme.neon("│");
     for (const wrapped of wrapText(text, width)) {
-      process.stdout.write(`│ ${wrapped.padEnd(width)} │\n`);
+      process.stdout.write(`${border} ${wrapped.padEnd(width)} ${border}\n`);
     }
   }
 
   private contentWidth(): number {
     const terminalWidth = process.stdout.columns ?? 80;
     return Math.max(MIN_CONTENT_WIDTH, Math.min(terminalWidth - 4, MAX_CONTENT_WIDTH));
-  }
-
-  private paintCollapsed(): void {
-    clearLine(process.stdout, 0);
-    cursorTo(process.stdout, 0);
-    process.stdout.write(`${SPINNER_FRAMES[this.frameIndex]} ${this.step}  (press e to expand)`);
-  }
-
-  private clearCollapsedLine(): void {
-    clearLine(process.stdout, 0);
-    cursorTo(process.stdout, 0);
   }
 
   private readonly onData = (chunk: Buffer): void => {
@@ -183,7 +137,7 @@ export class ProgressUI {
   };
 
   private enableKeypress(): void {
-    if (this.rawModeActive) return;
+    if (!this.canListenForKeypress || this.rawModeActive) return;
     process.stdin.setRawMode(true);
     process.stdin.resume();
     process.stdin.on("data", this.onData);
