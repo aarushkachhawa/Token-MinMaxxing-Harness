@@ -260,6 +260,34 @@ describe("Router", () => {
     expect(cheapShareA).toBeCloseTo(cheapShareB, 1);
   });
 
+  it("expected-cost modeling penalizes an unreliable cheap arm more than a reliable one at the same sticker price", () => {
+    // Two arms cost exactly the same, so the OLD cost term (normalizing raw arm.cost) could never
+    // tell them apart -- it would score them identically regardless of reliability. Folding in
+    // P(fail) * escalationCost should separate them once one arm actually fails much more often,
+    // since a flaky cheap arm's true expected cost (rework included) is much closer to the
+    // category's priciest arm than its sticker price alone suggests.
+    const router = new Router(new SeededRng(5));
+    router.register("small-edit", "cheap-reliable", 0.01, 2, 1, 1);
+    router.register("small-edit", "cheap-flaky", 0.01, 2, 1, 1);
+    router.register("small-edit", "strong", 1.0, 2, 1, 1);
+
+    const reliable = router.getArm("small-edit", "cheap-reliable")!;
+    reliable.alpha = 95;
+    reliable.beta = 5; // ~0.95 mean success rate
+    const flaky = router.getArm("small-edit", "cheap-flaky")!;
+    flaky.alpha = 20;
+    flaky.beta = 80; // ~0.2 mean success rate
+    const strong = router.getArm("small-edit", "strong")!;
+    strong.alpha = 95;
+    strong.beta = 5;
+
+    const costWeight = 1;
+    const draws = Array.from({ length: 500 }, () => router.route("small-edit", costWeight));
+    const reliableCount = draws.filter((m) => m === "cheap-reliable").length;
+    const flakyCount = draws.filter((m) => m === "cheap-flaky").length;
+    expect(reliableCount).toBeGreaterThan(flakyCount);
+  });
+
   it("adapts within a bounded number of pulls when a model's true success rate regresses", () => {
     // "strong" starts out excellent, then a provider-side regression drops it to near-useless.
     // A non-decaying bandit would take hundreds of failures to unlearn ~1000 prior successes;

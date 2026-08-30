@@ -1,1 +1,5 @@
-export { BudgetGovernor, type BudgetGovernorOptions } from "./budget-governor.js";
+export {
+  BudgetGovernor,
+  type BudgetGovernorOptions,
+  type CacheTokenBreakdown,
+} from "./budget-governor.js";

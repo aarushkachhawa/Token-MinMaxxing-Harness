@@ -90,12 +90,19 @@ export class SubtaskRunner {
     prompt: string,
     routeOptions: { forceEscalate: boolean }
   ): Promise<Attempt> {
-    const decision = await router.route(category, subtask.description, routeOptions);
+    const costWeight = this.options.budgetGovernor?.getCostWeight() ?? 0;
+    const decision = await router.route(category, subtask.description, { ...routeOptions, costWeight });
     const modelClient = this.modelClientFactory.getClient(decision.modelId);
     const executor = new Executor(modelClient, this.tools, {
       maxTurns: this.options.executorMaxTurns,
     });
     const result = await executor.run(this.options.systemPrompt ?? DEFAULT_SYSTEM_PROMPT, prompt);
+    this.options.budgetGovernor?.recordSpend(
+      result.usage.inputTokens,
+      result.usage.outputTokens,
+      Date.now(),
+      { cacheReadTokens: result.usage.cacheReadTokens, cacheWriteTokens: result.usage.cacheWriteTokens }
+    );
     const breakdown = await this.rewardCollector.score(subtask.description, result);
     router.reportOutcome(category, decision.modelId, breakdown.reward);
 

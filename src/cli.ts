@@ -13,6 +13,7 @@
  */
 import { createInterface } from "node:readline/promises";
 import { join } from "node:path";
+import { BudgetGovernor } from "./budget/index.js";
 import { AnthropicClassifierClient, DEFAULT_CLASSIFICATION_RULES, TaskClassifier } from "./classifier/index.js";
 import { drawBanner, formatResponse, theme } from "./cli-theme.js";
 import { getAnthropicApiKey } from "./config/env.js";
@@ -54,6 +55,11 @@ const ROUTER_STATE_PATH = join(process.cwd(), "router-state.sqlite");
 // whatever the router picks is what AnthropicModelClientFactory can actually build a client for.
 const FAST_CHEAP_MODEL_ID = "claude-haiku-4-5-20251001";
 const SMART_EXPENSIVE_MODEL_ID = "claude-sonnet-5";
+// Burn-rate target the budget governor throttles routing against once exceeded -- generous enough
+// that ordinary interactive use (a handful of subtasks a minute) never triggers cost throttling on
+// its own; only a sustained heavy burn rate (many large or escalated subtasks back to back) pushes
+// costWeight up. A starting point, not derived from real usage data yet.
+const TARGET_TOKENS_PER_MINUTE = 200_000;
 
 const SYSTEM_PROMPT =
   "You are a careful coding assistant working in this project's repository. Use " +
@@ -289,6 +295,10 @@ async function main() {
     }),
   ];
   const contextCompiler = new ContextCompiler();
+  // One instance shared across every subtask in the session, so burn-rate reflects the session's
+  // real cumulative spend (cache-discounted -- see BudgetGovernor.recordSpend) rather than
+  // resetting per request.
+  const budgetGovernor = new BudgetGovernor(TARGET_TOKENS_PER_MINUTE);
 
   const runner = new SubtaskRunner(
     bandit,
@@ -302,6 +312,7 @@ async function main() {
       systemPrompt: SYSTEM_PROMPT,
       executorMaxTurns: 15,
       hybridRouterOptions: { minPullsBeforeConfident: 3 },
+      budgetGovernor,
       onCategoryDiscovered: (category) => {
         if (bandit.getCandidates(category).length === 0) {
           bandit.register(category, FAST_CHEAP_MODEL_ID, 0.01);

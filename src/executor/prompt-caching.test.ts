@@ -1,15 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { cachedSystemPrompt, EPHEMERAL_CACHE_CONTROL, withCacheBreakpointOnLastMessage } from "./prompt-caching.js";
+import {
+  cachedSystemPrompt,
+  EPHEMERAL_CACHE_CONTROL,
+  EPHEMERAL_CACHE_CONTROL_LONG,
+  withCacheBreakpointOnLastMessage,
+} from "./prompt-caching.js";
 import type { ModelMessage } from "ai";
 
 describe("cachedSystemPrompt", () => {
-  it("wraps the content as a system message with an ephemeral cache breakpoint", () => {
+  it("defaults to a 1-hour ephemeral cache breakpoint", () => {
     const result = cachedSystemPrompt("You are a careful coding assistant.");
 
     expect(result).toEqual({
       role: "system",
       content: "You are a careful coding assistant.",
-      providerOptions: EPHEMERAL_CACHE_CONTROL,
+      providerOptions: EPHEMERAL_CACHE_CONTROL_LONG,
+    });
+  });
+
+  it("honors an explicit shorter TTL", () => {
+    const result = cachedSystemPrompt("You are a careful coding assistant.", "5m");
+
+    expect(result).toEqual({
+      role: "system",
+      content: "You are a careful coding assistant.",
+      providerOptions: { anthropic: { cacheControl: { type: "ephemeral", ttl: "5m" } } },
     });
   });
 
@@ -23,6 +38,14 @@ describe("EPHEMERAL_CACHE_CONTROL", () => {
   it("matches the shape @ai-sdk/anthropic expects at providerOptions.anthropic.cacheControl", () => {
     expect(EPHEMERAL_CACHE_CONTROL).toEqual({
       anthropic: { cacheControl: { type: "ephemeral" } },
+    });
+  });
+});
+
+describe("EPHEMERAL_CACHE_CONTROL_LONG", () => {
+  it("requests the 1-hour ephemeral TTL", () => {
+    expect(EPHEMERAL_CACHE_CONTROL_LONG).toEqual({
+      anthropic: { cacheControl: { type: "ephemeral", ttl: "1h" } },
     });
   });
 });

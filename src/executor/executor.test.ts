@@ -3,14 +3,17 @@ import { Executor } from "./executor.js";
 import { fakeTool, ScriptedModelClient } from "./fakes.js";
 import type { GenerateResult } from "./types.js";
 
-function textResult(text: string, usage = { inputTokens: 10, outputTokens: 5 }): GenerateResult {
+function textResult(
+  text: string,
+  usage: GenerateResult["usage"] = { inputTokens: 10, outputTokens: 5 }
+): GenerateResult {
   return { toolCalls: [], text, usage };
 }
 
 function toolCallResult(
   calls: { id: string; toolName: string; args?: Record<string, unknown> }[],
   text: string | null = null,
-  usage = { inputTokens: 10, outputTokens: 5 }
+  usage: GenerateResult["usage"] = { inputTokens: 10, outputTokens: 5 }
 ): GenerateResult {
   return {
     toolCalls: calls.map((c) => ({ id: c.id, toolName: c.toolName, args: c.args ?? {} })),
@@ -168,6 +171,33 @@ describe("Executor", () => {
 
     const result = await executor.run("system", "go");
 
-    expect(result.usage).toEqual({ inputTokens: 250, outputTokens: 30 });
+    expect(result.usage).toEqual({
+      inputTokens: 250,
+      outputTokens: 30,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+  });
+
+  it("accumulates cache read/write token breakdown across every turn", async () => {
+    const tool = fakeTool("t");
+    const client = new ScriptedModelClient([
+      toolCallResult([{ id: "c1", toolName: "t" }], null, {
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheWriteTokens: 80,
+      }),
+      textResult("done", { inputTokens: 150, outputTokens: 10, cacheReadTokens: 90 }),
+    ]);
+    const executor = new Executor(client, [tool]);
+
+    const result = await executor.run("system", "go");
+
+    expect(result.usage).toEqual({
+      inputTokens: 250,
+      outputTokens: 30,
+      cacheReadTokens: 90,
+      cacheWriteTokens: 80,
+    });
   });
 });

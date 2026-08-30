@@ -31,6 +31,8 @@ export class Executor {
     const trace: TraceEntry[] = [];
     let inputTokens = 0;
     let outputTokens = 0;
+    let cacheReadTokens = 0;
+    let cacheWriteTokens = 0;
     let toolCallCount = 0;
     let turns = 0;
 
@@ -43,6 +45,8 @@ export class Executor {
       });
       inputTokens += result.usage.inputTokens;
       outputTokens += result.usage.outputTokens;
+      cacheReadTokens += result.usage.cacheReadTokens ?? 0;
+      cacheWriteTokens += result.usage.cacheWriteTokens ?? 0;
 
       if (result.toolCalls.length === 0) {
         const finalText = result.text ?? "";
@@ -51,7 +55,7 @@ export class Executor {
           finalText,
           turns,
           toolCallCount,
-          usage: { inputTokens, outputTokens },
+          usage: { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens },
           trace,
           stopReason: "final_answer",
         };
@@ -98,7 +102,7 @@ export class Executor {
       finalText: "",
       turns,
       toolCallCount,
-      usage: { inputTokens, outputTokens },
+      usage: { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens },
       trace,
       stopReason: "max_turns_exceeded",
     };

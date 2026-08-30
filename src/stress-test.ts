@@ -6,6 +6,7 @@
  * Spends real tokens every time it runs.
  * Usage: npm run stress -- "your task description" [--always-judge]
  */
+import { BudgetGovernor } from "./budget/index.js";
 import { AnthropicClassifierClient, DEFAULT_CLASSIFICATION_RULES, TaskClassifier } from "./classifier/index.js";
 import { getAnthropicApiKey } from "./config/env.js";
 import { ContextCompiler } from "./context/index.js";
@@ -40,6 +41,8 @@ const DEFAULT_TASK = "list the test files in src/reward and summarize what proxy
 // whatever the router picks is what AnthropicModelClientFactory can actually build a client for.
 const FAST_CHEAP_MODEL_ID = "claude-haiku-4-5-20251001";
 const SMART_EXPENSIVE_MODEL_ID = "claude-sonnet-5";
+// See cli.ts for the reasoning behind this default -- a single-task run rarely gets close to it.
+const TARGET_TOKENS_PER_MINUTE = 200_000;
 
 async function main() {
   const args = process.argv.slice(2);
@@ -75,6 +78,7 @@ async function main() {
     createRunCommandTool(process.cwd(), { onBeforeExecute: interactiveRunCommandApprovalGate }),
   ];
   const contextCompiler = new ContextCompiler();
+  const budgetGovernor = new BudgetGovernor(TARGET_TOKENS_PER_MINUTE);
 
   const runner = new SubtaskRunner(
     bandit,
@@ -87,6 +91,7 @@ async function main() {
     {
       systemPrompt: SYSTEM_PROMPT,
       hybridRouterOptions: { minPullsBeforeConfident: 3 },
+      budgetGovernor,
       onCategoryDiscovered: (category) => {
         if (bandit.getCandidates(category).length === 0) {
           bandit.register(category, FAST_CHEAP_MODEL_ID, 0.01);

@@ -1,6 +1,10 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { generateText, tool, type ModelMessage, type TextPart, type ToolCallPart } from "ai";
-import { cachedSystemPrompt, EPHEMERAL_CACHE_CONTROL, withCacheBreakpointOnLastMessage } from "./prompt-caching.js";
+import {
+  cachedSystemPrompt,
+  EPHEMERAL_CACHE_CONTROL_LONG,
+  withCacheBreakpointOnLastMessage,
+} from "./prompt-caching.js";
 import type { GenerateOptions, GenerateResult, Message, ModelClient, ToolCall } from "./types.js";
 
 export interface AnthropicModelClientOptions {
@@ -49,7 +53,7 @@ export class AnthropicModelClient implements ModelClient {
           tool({
             description: def.description,
             inputSchema: def.parameters,
-            ...(name === lastToolName ? { providerOptions: EPHEMERAL_CACHE_CONTROL } : {}),
+            ...(name === lastToolName ? { providerOptions: EPHEMERAL_CACHE_CONTROL_LONG } : {}),
           }),
         ])
       ),
@@ -67,6 +71,8 @@ export class AnthropicModelClient implements ModelClient {
       usage: {
         inputTokens: result.usage.inputTokens ?? 0,
         outputTokens: result.usage.outputTokens ?? 0,
+        cacheReadTokens: result.usage.inputTokenDetails?.cacheReadTokens ?? 0,
+        cacheWriteTokens: result.usage.inputTokenDetails?.cacheWriteTokens ?? 0,
       },
     };
   }
