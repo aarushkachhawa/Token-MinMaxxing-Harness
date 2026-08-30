@@ -62,61 +62,88 @@ export function promptDivider(): string {
 }
 
 /**
- * Renders a rounded box: a gradient title, a dim subtitle, a blank separator, then one line per
- * entry in `rows` (rows may already contain color codes -- width is measured with them stripped).
- * Width auto-sizes to the widest visible line, capped to the terminal width so it never wraps.
+ * Renders the startup banner: a full-width top rule (matching promptDivider()'s style), then a
+ * gradient title, a dim subtitle, a blank separator, and one line per entry in `rows` -- all
+ * flush left, no side borders or bottom rule. A boxed version was tried first, but a bordered
+ * box around left-aligned text needs a right-hand border to look intentional, and a side border
+ * around a variable-width terminal adds visual noise without adding structure -- same reasoning
+ * that ruled out a boxed version of the input prompt (see promptDivider() above).
  */
 export function drawBanner(title: string, subtitle: string, rows: string[]): string {
-  const maxWidth = Math.max((process.stdout.columns ?? 80) - 4, 20);
-  const contentLines = [gradient(title), theme.dim(subtitle), "", ...rows];
-  const innerWidth = Math.min(Math.max(...contentLines.map(visibleLength)), maxWidth);
-
-  const border = theme.neon;
-  const top = border(`╭${"─".repeat(innerWidth + 2)}╮`);
-  const bottom = border(`╰${"─".repeat(innerWidth + 2)}╯`);
-  const line = (text: string) => {
-    const pad = Math.max(0, innerWidth - visibleLength(text));
-    return `${border("│")} ${text}${" ".repeat(pad)} ${border("│")}`;
-  };
-
-  return [top, ...contentLines.map(line), bottom].join("\n");
+  return [promptDivider(), gradient(title), theme.dim(subtitle), "", ...rows].join("\n");
 }
 
 const RESPONSE_MAX_WIDTH = 92;
 const RESPONSE_INDENT = "  ";
 
 /**
- * Formats a finished request's answer for display: a small labeled header so a response is
- * visually distinguishable from the step log above it, then the text itself word-wrapped to a
- * comfortable reading column (not the full terminal width, which looks cluttered and hurts
- * readability on a wide terminal) and indented so it reads as a block distinct from the
- * flush-left prompt/step lines around it. Purely a display transform -- callers should keep using
- * the original unwrapped text for anything besides printing (conversation history, summarization).
+ * Formats a finished request's answer for display: a neon star sits right next to the first line
+ * of the response (so it's visually distinguishable from the step log above it without a
+ * separate header line), the text is word-wrapped to a comfortable reading column (not the full
+ * terminal width, which looks cluttered and hurts readability on a wide terminal), and any
+ * `**markdown bold**` the model wrote renders as real terminal bold instead of showing the
+ * literal asterisks. Every line after the first -- both wrapped continuations and separate
+ * paragraphs -- gets a hanging indent matching the star's visible width, so the whole block reads
+ * as aligned under the star rather than the star looking like a bullet on an otherwise flush-left
+ * paragraph. Purely a display transform -- callers should keep using the original unwrapped text
+ * for anything besides printing (conversation history, summarization).
  */
 export function formatResponse(text: string): string {
+  const marker = `${theme.neon("✦")} `;
   const width = Math.max(Math.min((process.stdout.columns || 80) - RESPONSE_INDENT.length, RESPONSE_MAX_WIDTH), 20);
-  const header = `${theme.neon("✦")} ${theme.bold("Harness")}`;
-  const body = text
-    .split("\n")
-    .flatMap((paragraph) => wrapWords(paragraph, width))
-    .map((line) => `${RESPONSE_INDENT}${line}`)
-    .join("\n");
-  return `${header}\n${body}`;
+  const lines = text.split("\n").flatMap((paragraph) => wrapWords(paragraph, width));
+  return lines.map((line, i) => `${i === 0 ? marker : RESPONSE_INDENT}${line}`).join("\n");
+}
+
+interface Word {
+  text: string;
+  bold: boolean;
+}
+
+/**
+ * Splits a paragraph into words, tagging each with whether it fell inside a `**...**` span --
+ * per-word rather than per-line, so a bold span that happens to straddle a wrap boundary (a
+ * multi-word `**like this one**`) still renders correctly on both resulting lines instead of
+ * leaving an unpaired `**` marker on one of them.
+ */
+function tokenizeBold(paragraph: string): Word[] {
+  const words: Word[] = [];
+  const pushPlain = (segment: string, bold: boolean) => {
+    for (const w of segment.split(" ")) if (w.length > 0) words.push({ text: w, bold });
+  };
+  const boldSpan = /\*\*(.+?)\*\*/g;
+  let lastIndex = 0;
+  for (const match of paragraph.matchAll(boldSpan)) {
+    pushPlain(paragraph.slice(lastIndex, match.index), false);
+    pushPlain(match[1], true);
+    lastIndex = match.index + match[0].length;
+  }
+  pushPlain(paragraph.slice(lastIndex), false);
+  return words;
 }
 
 function wrapWords(paragraph: string, width: number): string[] {
-  if (paragraph.length === 0) return [""];
+  const words = tokenizeBold(paragraph);
+  if (words.length === 0) return [""];
+
   const lines: string[] = [];
-  let current = "";
-  for (const word of paragraph.split(" ")) {
-    const candidate = current.length === 0 ? word : `${current} ${word}`;
-    if (candidate.length > width && current.length > 0) {
-      lines.push(current);
-      current = word;
+  let current: Word[] = [];
+  let currentLength = 0;
+  for (const word of words) {
+    const extra = (current.length === 0 ? 0 : 1) + word.text.length;
+    if (currentLength + extra > width && current.length > 0) {
+      lines.push(renderWords(current));
+      current = [word];
+      currentLength = word.text.length;
     } else {
-      current = candidate;
+      current.push(word);
+      currentLength += extra;
     }
   }
-  if (current.length > 0) lines.push(current);
+  if (current.length > 0) lines.push(renderWords(current));
   return lines;
+}
+
+function renderWords(words: Word[]): string {
+  return words.map((w) => (w.bold ? theme.bold(w.text) : w.text)).join(" ");
 }

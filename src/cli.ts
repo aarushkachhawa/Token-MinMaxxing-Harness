@@ -99,14 +99,13 @@ function printHelp(): void {
       `  ${theme.neon("/help")}          show this help`,
       `  ${theme.neon("/reset")}         forget conversation history and start a fresh topic`,
       `  ${theme.neon("/exit, /quit")}   exit the CLI`,
-      theme.dim("While a request is running, press 'e' to expand/collapse the detailed progress view."),
     ].join("\n")
   );
 }
 
 function printBanner(): void {
   console.log(
-    drawBanner("TOKEN-MAXXING-HARNESS", "agentic coding harness · hybrid model router", [
+    drawBanner("TOKEN-MINMAXXING-HARNESS", "agentic coding harness · hybrid model router", [
       `${theme.neon("❯")} /help    ${theme.dim("show available commands")}`,
       `${theme.neon("❯")} /reset   ${theme.dim("clear conversation history")}`,
       `${theme.neon("❯")} /exit    ${theme.dim("quit")}`,
@@ -121,12 +120,11 @@ function printBanner(): void {
  * demo-real.ts. Long-lived deps (router store/bandit, classifier, runner, etc.) are shared
  * across calls so router learning accumulates across the whole interactive session.
  *
- * Collapsed mode shows *only* the spinner for the entire request -- no interleaved lines, since
- * that broke the point of collapsing in the first place. Everything that happens along the way
- * (plan, subtask headers, rewards, replan checks, triage/exploration/judge chatter) goes through
- * progressUI, which only surfaces it in the expanded box (press 'e'). The one thing that always
- * prints regardless of expand state is the actual deliverable: each subtask's answer text, once
- * the whole request has finished.
+ * progressUI prints one line per distinct step (plan, subtask headers, rewards, replan checks) as
+ * the request moves through them -- see progress-ui.ts. The detail log (triage/exploration/judge
+ * chatter, etc.) that used to go through progressUI.log() is currently swallowed there rather
+ * than printed; the one thing that always prints is the actual deliverable: each subtask's answer
+ * text, once the whole request has finished.
  *
  * deps.conversationHistory carries prior turns into Orchestrator.plan() so a follow-up like "now
  * do the same for the other file" resolves against what was actually asked/answered before, and

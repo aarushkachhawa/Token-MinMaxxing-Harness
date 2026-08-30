@@ -142,8 +142,20 @@ export class FramedPrompt {
         cursorRowOffset = cursorRow;
       };
 
+      // A resize mid-edit just means redraw() should recompute wrap width and row count against
+      // the new terminal size -- cursorRowOffset is a plain row count fixed by our own explicit
+      // `\r\n`s on the last redraw, not by column width, so it still correctly says how many rows
+      // above the cursor the input's top row is regardless of what the width changed to. redraw()
+      // already moves up that many rows, erases everything below, and rewrites the current buffer
+      // fresh -- exactly "reformat the existing lines," no different from a normal keystroke
+      // redraw except that the width it reads happens to have changed.
+      const onResize = (): void => {
+        redraw();
+      };
+
       const finish = (result: string): void => {
         this.stream.off("data", onData);
+        process.stdout.off("resize", onResize);
         this.disableRawMode();
         process.stdout.write("\x1b[?7h"); // restore autowrap before any normal output follows
         // Move from wherever the edit cursor was sitting down to just past the (already-drawn,
@@ -160,6 +172,7 @@ export class FramedPrompt {
         while (i < text.length) {
           const ch = text[i];
           if (ch === CTRL_C) {
+            process.stdout.off("resize", onResize);
             process.stdout.write("\x1b[?7h");
             process.emit("SIGINT");
             return;
@@ -234,6 +247,7 @@ export class FramedPrompt {
       redraw(); // initial paint: label, blank buffer, and the bottom divider
       this.enableRawMode();
       this.stream.on("data", onData);
+      process.stdout.on("resize", onResize);
     });
   }
 
