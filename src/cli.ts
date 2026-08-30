@@ -14,9 +14,11 @@
 import { createInterface } from "node:readline/promises";
 import { join } from "node:path";
 import { AnthropicClassifierClient, DEFAULT_CLASSIFICATION_RULES, TaskClassifier } from "./classifier/index.js";
+import { drawBanner, formatResponse, theme } from "./cli-theme.js";
 import { getAnthropicApiKey } from "./config/env.js";
 import { ContextCompiler, type SubtaskOutput } from "./context/index.js";
 import { AnthropicModelClientFactory } from "./executor/anthropic-model-client-factory.js";
+import { FramedPrompt } from "./framed-prompt.js";
 import { type ConversationSummarizerClient, AnthropicConversationSummarizerClient } from "./memory/index.js";
 import {
   AnthropicOrchestratorClient,
@@ -93,13 +95,23 @@ interface PipelineDeps {
 function printHelp(): void {
   console.log(
     [
-      "Commands:",
-      "  /help          show this help",
-      "  /reset         forget conversation history and start a fresh topic",
-      "  /exit, /quit   exit the CLI",
-      "While a request is running, press 'e' to expand/collapse the detailed progress view.",
+      theme.bold("Commands:"),
+      `  ${theme.neon("/help")}          show this help`,
+      `  ${theme.neon("/reset")}         forget conversation history and start a fresh topic`,
+      `  ${theme.neon("/exit, /quit")}   exit the CLI`,
     ].join("\n")
   );
+}
+
+function printBanner(): void {
+  console.log(
+    drawBanner("TOKEN-MINMAXXING-HARNESS", "agentic coding harness · hybrid model router", [
+      `${theme.neon("❯")} /help    ${theme.dim("show available commands")}`,
+      `${theme.neon("❯")} /reset   ${theme.dim("clear conversation history")}`,
+      `${theme.neon("❯")} /exit    ${theme.dim("quit")}`,
+    ])
+  );
+  console.log();
 }
 
 /**
@@ -108,12 +120,11 @@ function printHelp(): void {
  * demo-real.ts. Long-lived deps (router store/bandit, classifier, runner, etc.) are shared
  * across calls so router learning accumulates across the whole interactive session.
  *
- * Collapsed mode shows *only* the spinner for the entire request -- no interleaved lines, since
- * that broke the point of collapsing in the first place. Everything that happens along the way
- * (plan, subtask headers, rewards, replan checks, triage/exploration/judge chatter) goes through
- * progressUI, which only surfaces it in the expanded box (press 'e'). The one thing that always
- * prints regardless of expand state is the actual deliverable: each subtask's answer text, once
- * the whole request has finished.
+ * progressUI prints one line per distinct step (plan, subtask headers, rewards, replan checks) as
+ * the request moves through them -- see progress-ui.ts. The detail log (triage/exploration/judge
+ * chatter, etc.) that used to go through progressUI.log() is currently swallowed there rather
+ * than printed; the one thing that always prints is the actual deliverable: each subtask's answer
+ * text, once the whole request has finished.
  *
  * deps.conversationHistory carries prior turns into Orchestrator.plan() so a follow-up like "now
  * do the same for the other file" resolves against what was actually asked/answered before, and
@@ -179,7 +190,7 @@ async function runRequest(requestDescription: string, deps: PipelineDeps): Promi
 
     progressUI.stop();
     const finalText = allOutputs.map((output) => output.finalText).join("\n\n");
-    console.log(finalText);
+    console.log(formatResponse(finalText));
     console.log();
     // Recorded after the request actually finishes -- if runRequest throws above, this turn never
     // gets appended, since there's no coherent "answer" to remember for a failed request. Also
@@ -219,8 +230,7 @@ async function runRequest(requestDescription: string, deps: PipelineDeps): Promi
 }
 
 async function main() {
-  console.log("Token-Maxxing-Harness CLI");
-  console.log("Type a request, /help for commands, /exit to quit.\n");
+  printBanner();
 
   const progressUI = new ProgressUI();
   // Defaults true so a request that somehow completes without triage ever firing (shouldn't
@@ -315,8 +325,28 @@ async function main() {
     summarizer,
   };
 
+  // FramedPrompt draws a divider above and below the input row and reads raw keystrokes itself,
+  // rather than going through Node's readline -- see framed-prompt.ts for why the two can't
+  // coexist (readline erases everything below the cursor on every redraw, wiping a pre-drawn
+  // frame before it's ever visible). It needs a real stdin TTY to put into raw mode, so piped/
+  // non-interactive input (no interactive keystrokes to read in the first place) falls back to a
+  // plain readline question with no framing, same as before FramedPrompt existed.
+  const isFullyInteractive = Boolean(process.stdout.isTTY && process.stdin.isTTY);
+  const framedPrompt = isFullyInteractive ? new FramedPrompt() : null;
+  // One readline interface serves any number of consecutive fallback questions (/help, blank
+  // lines, a pasted or piped multi-line batch) -- closing and recreating it on *every* line is
+  // what broke this originally: Node delivers a piped/pasted multi-line chunk to the interface in
+  // one shot, and closing the interface right after the first line discards the rest of that
+  // chunk instead of leaving it for the next question. We only close it around runRequest(),
+  // since that's the one window where interactiveWriteApprovalGate might need to open its own
+  // interface on stdin and two concurrently-open interfaces on the same stream would fight over
+  // input. FramedPrompt needs no such dance: it always fully releases raw mode before ask()
+  // resolves, well before runRequest() ever starts, so there's nothing left open to collide with.
+  let fallbackRl = framedPrompt ? null : createInterface({ input: process.stdin, output: process.stdout });
+
   const cleanup = () => {
     progressUI.stop();
+    framedPrompt?.release();
     routerStore.close();
   };
   process.on("SIGINT", () => {
@@ -325,16 +355,10 @@ async function main() {
     process.exit(0);
   });
 
-  // One readline interface serves any number of consecutive questions (/help, blank lines, a
-  // pasted or piped multi-line batch) -- closing and recreating it on *every* line is what broke
-  // this originally: Node delivers a piped/pasted multi-line chunk to the interface in one shot,
-  // and closing the interface right after the first line discards the rest of that chunk instead
-  // of leaving it for the next question. We only close it around runRequest(), since that's the
-  // one window where interactiveWriteApprovalGate might need to open its own interface on stdin
-  // and two concurrently-open interfaces on the same stream would fight over input.
-  let rl = createInterface({ input: process.stdin, output: process.stdout });
   for (;;) {
-    const line = (await rl.question("> ")).trim();
+    const line = (
+      framedPrompt ? await framedPrompt.ask(`${theme.neon("❯")} `) : await fallbackRl!.question("> ")
+    ).trim();
 
     if (!line) continue;
     if (line === "/exit" || line === "/quit") break;
@@ -344,20 +368,20 @@ async function main() {
     }
     if (line === "/reset") {
       conversationHistory.length = 0;
-      console.log("Conversation history cleared.\n");
+      console.log(theme.success("Conversation history cleared.\n"));
       continue;
     }
 
-    rl.close();
+    fallbackRl?.close();
     try {
       await runRequest(line, deps);
     } catch (err) {
-      console.error("Error:", err instanceof Error ? err.message : err);
+      console.error(theme.error("Error:"), err instanceof Error ? err.message : err);
     }
-    rl = createInterface({ input: process.stdin, output: process.stdout });
+    if (!framedPrompt) fallbackRl = createInterface({ input: process.stdin, output: process.stdout });
   }
 
-  rl.close();
+  fallbackRl?.close();
   cleanup();
 }
 

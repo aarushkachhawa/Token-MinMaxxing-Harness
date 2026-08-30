@@ -15,7 +15,7 @@
     "demo:real-pipeline": "tsx --env-file=.env src/demo-real.ts",
     "stress": "tsx --env-file=.env src/stress-test.ts",
     "write-check": "tsx --env-file=.env src/write-file-check.ts",
-    "cli": "tsx --env-file=.env src/cli.ts"
+    "cli": "tsx --disable-warning=ExperimentalWarning --env-file=.env src/cli.ts"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

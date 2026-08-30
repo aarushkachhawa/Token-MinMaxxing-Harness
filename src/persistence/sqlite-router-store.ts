@@ -6,6 +6,13 @@ import type { RouterStore } from "./types.js";
  * Persists router arm state to a SQLite file via node:sqlite (built into Node, no dependency
  * needed -- currently an experimental Node API, but functions correctly as of Node 23). Pass
  * ":memory:" for an ephemeral in-process database, useful in tests.
+ *
+ * The `import { DatabaseSync } from "node:sqlite"` above fires Node's ExperimentalWarning the
+ * moment this module loads -- before any importing module's own top-level code has a chance to
+ * run, since ESM resolves static imports through an async loader ahead of the entry module's
+ * body. A `process.on("warning", ...)` listener registered in that entry module is too late to
+ * catch it, so cli.ts's `cli` npm script instead passes Node's own
+ * `--disable-warning=ExperimentalWarning` flag.
  */
 export class SqliteRouterStore implements RouterStore {
   private db: DatabaseSync;
