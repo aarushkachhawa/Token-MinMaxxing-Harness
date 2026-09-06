@@ -141,10 +141,14 @@ async function main() {
           console.log(`Context from: ${subtask.dependsOn.join(", ")}`);
         }
 
-        const { output, reward, escalatedAfterFailure } = await runner.run(subtask, outputs);
+        const { output, reward, escalatedAfterFailure, usage } = await runner.run(subtask, outputs);
 
         console.log(`Final: "${output.finalText}"`);
-        console.log(`Reward: ${reward.toFixed(2)}${escalatedAfterFailure ? " (after escalation retry)" : ""}\n`);
+        console.log(`Reward: ${reward.toFixed(2)}${escalatedAfterFailure ? " (after escalation retry)" : ""}`);
+        console.log(
+          `Usage: input=${usage.inputTokens} output=${usage.outputTokens} ` +
+            `cacheRead=${usage.cacheReadTokens ?? 0} cacheWrite=${usage.cacheWriteTokens ?? 0}\n`
+        );
 
         outputs.set(subtask.id, output);
         allOutputs.push(output);

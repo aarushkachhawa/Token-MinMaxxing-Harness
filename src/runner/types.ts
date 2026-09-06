@@ -1,5 +1,6 @@
 import type { BudgetGovernor } from "../budget/budget-governor.js";
 import type { SubtaskOutput } from "../context/types.js";
+import type { TokenUsage } from "../executor/types.js";
 import type { HybridRouterOptions } from "../router/hybrid-router.js";
 
 export interface SubtaskRunResult {
@@ -7,6 +8,9 @@ export interface SubtaskRunResult {
   reward: number;
   /** True if the first attempt didn't produce a final answer and a forced-escalation retry ran. */
   escalatedAfterFailure: boolean;
+  /** Total token usage actually spent on this subtask -- both attempts summed if a retry ran,
+   * since the first (failed) attempt still cost real tokens even though its output was discarded. */
+  usage: TokenUsage;
 }
 
 export interface SubtaskRunnerOptions {

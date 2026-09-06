@@ -2,7 +2,7 @@ import type { TaskClassifier } from "../classifier/task-classifier.js";
 import type { ContextCompiler } from "../context/context-compiler.js";
 import type { SubtaskOutput } from "../context/types.js";
 import { Executor } from "../executor/executor.js";
-import type { ModelClientFactory, Tool } from "../executor/types.js";
+import type { ModelClientFactory, TokenUsage, Tool } from "../executor/types.js";
 import type { Subtask } from "../orchestrator/types.js";
 import type { RewardCollector } from "../reward/reward-collector.js";
 import type { Router } from "../router/bandit.js";
@@ -18,6 +18,16 @@ interface Attempt {
   finalText: string;
   stopReason: "final_answer" | "max_turns_exceeded";
   reward: number;
+  usage: TokenUsage;
+}
+
+function sumUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    cacheReadTokens: (a.cacheReadTokens ?? 0) + (b.cacheReadTokens ?? 0),
+    cacheWriteTokens: (a.cacheWriteTokens ?? 0) + (b.cacheWriteTokens ?? 0),
+  };
 }
 
 /**
@@ -67,12 +77,14 @@ export class SubtaskRunner {
     });
 
     let best = first;
+    let totalUsage = first.usage;
     let escalatedAfterFailure = false;
     if (first.stopReason !== "final_answer") {
       const retry = await this.attempt(subtask, classification.category, router, prompt, {
         forceEscalate: true,
       });
       escalatedAfterFailure = true;
+      totalUsage = sumUsage(first.usage, retry.usage);
       best = retry.reward > first.reward ? retry : first;
     }
 
@@ -80,6 +92,7 @@ export class SubtaskRunner {
       output: { subtaskId: subtask.id, description: subtask.description, finalText: best.finalText },
       reward: best.reward,
       escalatedAfterFailure,
+      usage: totalUsage,
     };
   }
 
@@ -106,6 +119,11 @@ export class SubtaskRunner {
     const breakdown = await this.rewardCollector.score(subtask.description, result);
     router.reportOutcome(category, decision.modelId, breakdown.reward);
 
-    return { finalText: result.finalText, stopReason: result.stopReason, reward: breakdown.reward };
+    return {
+      finalText: result.finalText,
+      stopReason: result.stopReason,
+      reward: breakdown.reward,
+      usage: result.usage,
+    };
   }
 }
