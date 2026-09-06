@@ -65,4 +65,27 @@ describe("BudgetGovernor", () => {
 
     expect(governor.getBurnRate(90_000)).toBe(100);
   });
+
+  it("discounts cache-read tokens toward their real (cheaper) cost", () => {
+    const governor = new BudgetGovernor(1000, { windowMs: 60_000 });
+    // 1000 input tokens, 900 of which were served from cache: 100 fresh + 900 * 0.1 = 190 billed
+    governor.recordSpend(1000, 0, 0, { cacheReadTokens: 900 });
+
+    expect(governor.getBurnRate(0)).toBe(190);
+  });
+
+  it("surcharges cache-write tokens above a fresh input token's cost", () => {
+    const governor = new BudgetGovernor(1000, { windowMs: 60_000 });
+    // all 1000 input tokens were a fresh cache write: 1000 * 1.5 = 1500 billed
+    governor.recordSpend(1000, 0, 0, { cacheWriteTokens: 1000 });
+
+    expect(governor.getBurnRate(0)).toBe(1500);
+  });
+
+  it("counts raw token volume when no cache breakdown is given, matching pre-caching behavior", () => {
+    const governor = new BudgetGovernor(1000, { windowMs: 60_000 });
+    governor.recordSpend(400, 100, 0);
+
+    expect(governor.getBurnRate(0)).toBe(500);
+  });
 });

@@ -134,7 +134,17 @@ harness's core goal if it becomes the default path instead of the exception.
 
 Tracks spend *and* burn-rate (tokens/min, not just a cumulative cap). Rising burn-rate increases λ
 above, biasing routing toward cheaper arms without overriding the classifier or bypassing the
-bandit's learned quality beliefs.
+bandit's learned quality beliefs. `recordSpend()` is cache-aware: it's given the same
+input/output/cache-read/cache-write breakdown described under Prompt caching below and bills
+cache-read tokens at a fraction of a fresh input token's weight (and cache-write tokens at a
+premium), so burn-rate tracks real spend rather than raw token volume -- otherwise a call that hit
+a full cache read would count as if it cost the same as a completely fresh one, and caching would
+never show up as the harness actually getting cheaper. Wired into `SubtaskRunner` (`src/runner/`)
+as of the router-to-cost work below: each attempt asks the governor for the current costWeight
+before routing and reports its real usage back afterward, and `cli.ts`/`demo-real.ts`/
+`stress-test.ts` all construct one shared instance per run. Previously this component existed and
+was tested but nothing in the real pipeline ever called it, so costWeight was permanently 0 in
+every real run regardless of actual spend.
 
 ## Reward signal
 
@@ -211,6 +221,30 @@ tool-use loops, not the average short cheap-tier subtask. Lengthening the shared
 tool descriptions to deliberately clear Haiku's threshold is a plausible follow-up, not attempted
 here since it would mean padding real content with tokens that exist only to unlock caching.
 
+**Extended (1-hour) TTL.** Every breakpoint above used Anthropic's default 5-minute ephemeral TTL,
+which is short relative to a real run: classification, routing, tool-use turns, and reward scoring
+all happen between one subtask's calls and the next, and a multi-subtask run or benchmark pilot
+routinely spans well over 5 minutes end to end. A cache write that lapses before the next read
+arrives is pure waste -- it paid the write premium for nothing. `cachedSystemPrompt()`
+(`src/executor/prompt-caching.ts`) now defaults to the 1-hour TTL, and the executor's "last tool
+definition" breakpoint (`EPHEMERAL_CACHE_CONTROL_LONG`) does too, since both are byte-identical
+across every subtask for the life of a whole run rather than rolling forward turn by turn. The
+rolling "last message" breakpoint (`withCacheBreakpointOnLastMessage`) deliberately keeps the
+default 5-minute TTL: it's superseded by a new marked message on every turn, so it's read at most a
+couple of times before moving on, and paying the larger 1-hour write premium there would be pure
+loss with no offsetting reads. This is a genuinely free win, not a workaround for the Haiku minimum
+above -- it doesn't add a single token, it just stops throwing away cache writes that a real run's
+own pacing was already discarding before they paid off.
+
+**Cache-aware cost accounting.** Before this, a call's cache read/write breakdown was discarded the
+moment `AnthropicModelClient.generate()` returned -- `GenerateResult.usage` only carried
+`inputTokens`/`outputTokens`. `TokenUsage` (`src/executor/types.ts`) now also carries
+`cacheReadTokens`/`cacheWriteTokens` (read from the AI SDK's own `usage.inputTokenDetails`, which
+already separates a cache read/write out of the total), `Executor.run()` aggregates them across
+turns like the other two fields, and `BudgetGovernor.recordSpend()` (see Budget governor above)
+uses them to bill real spend instead of raw token counts. Without this, caching's savings were
+real on Anthropic's invoice but invisible to the harness itself.
+
 ## Open design questions
 
 - **Provider abstraction**: the single-provider version of this is done -- `ModelClientFactory`
@@ -223,11 +257,20 @@ here since it would mean padding real content with tokens that exist only to unl
 - **Contextual features**: if per-category routing proves too coarse along a specific dimension
   (language, file size), promote it to an explicit bandit context feature rather than adding it
   speculatively.
-- **Escalation cost isn't modeled yet**: the router's cost term only counts the arm it picked, but a
-  cheap arm's true expected cost includes `P(fail) x cost of the escalated retry`. A flaky-but-cheap
-  model is currently undercosted, and gets tried first even on categories where a failed attempt is
-  expensive (side effects, wasted tokens). Needs revisiting once the executor and escalation loop
-  exist and failure probabilities are actually observable.
+- **Escalation cost modeling: implemented.** `CategoryRouter.select()` (`src/router/bandit.ts`) now
+  scores each arm on `cost + P(fail) * escalationCost`, not raw `cost` alone -- `P(fail)` is
+  `1 - meanSuccessRate` (the arm's stable decayed estimate, not the same Thompson draw used for the
+  quality term, so cost stays a deterministic function of accumulated evidence rather than
+  inheriting the exploration term's sampling noise) and `escalationCost` approximates
+  `SubtaskRunner`'s forced-escalation retry as the category's priciest candidate, since
+  `AnthropicEscalationClient` is explicitly steered toward a stronger model on a forced escalation,
+  not a random one. This is still an approximation -- the escalation client can in principle choose
+  any candidate, not always the priciest -- but it directly fixes the previously-flagged gap: two
+  arms priced identically but with very different failure rates used to score identically on cost;
+  now the flaky one's true expected cost (retries included) is scored much closer to the category's
+  strongest arm. The whole cost term was also dead in every real run until now regardless of this
+  fix, since nothing ever passed a nonzero `costWeight` -- see Budget governor above for the wiring
+  that makes it live.
 - **`read_file` offset/limit**: implemented. Optional 1-indexed `offset` and `limit` args select a
   specific line range instead of defaulting to the head of the file; `maxBytes` truncation still
   applies as a safety net on top of whatever range is selected, and an `offset` past the end of

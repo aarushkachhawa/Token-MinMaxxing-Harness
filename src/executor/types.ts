@@ -24,11 +24,22 @@ export interface GenerateOptions {
   tools: Record<string, ToolDefinition>;
 }
 
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  /** Portion of inputTokens served from an Anthropic prompt-cache read, billed at a fraction of
+   * the normal input rate. Undefined/0 for a provider or path that doesn't support caching. */
+  cacheReadTokens?: number;
+  /** Portion of inputTokens newly written to the prompt cache this call, billed at a premium over
+   * the normal input rate in exchange for cheaper reads on later calls. */
+  cacheWriteTokens?: number;
+}
+
 export interface GenerateResult {
   /** Present when the model wants to call tools; empty means this turn is a final answer. */
   toolCalls: ToolCall[];
   text: string | null;
-  usage: { inputTokens: number; outputTokens: number };
+  usage: TokenUsage;
 }
 
 /** Provider-agnostic boundary the executor talks to. Real implementations wrap the AI SDK. */
@@ -63,7 +74,7 @@ export interface ExecutionResult {
   finalText: string;
   turns: number;
   toolCallCount: number;
-  usage: { inputTokens: number; outputTokens: number };
+  usage: TokenUsage;
   trace: TraceEntry[];
   stopReason: "final_answer" | "max_turns_exceeded";
 }

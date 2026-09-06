@@ -8,6 +8,7 @@
  * Usage: npm run demo:real-pipeline -- "your request description here"
  */
 import { join } from "node:path";
+import { BudgetGovernor } from "./budget/index.js";
 import { AnthropicClassifierClient, DEFAULT_CLASSIFICATION_RULES, TaskClassifier } from "./classifier/index.js";
 import { getAnthropicApiKey } from "./config/env.js";
 import { ContextCompiler, type SubtaskOutput } from "./context/index.js";
@@ -34,6 +35,9 @@ const ROUTER_STATE_PATH = join(process.cwd(), "router-state.sqlite");
 // whatever the router picks is what AnthropicModelClientFactory can actually build a client for.
 const FAST_CHEAP_MODEL_ID = "claude-haiku-4-5-20251001";
 const SMART_EXPENSIVE_MODEL_ID = "claude-sonnet-5";
+// See cli.ts for the reasoning behind this default -- a single-request run rarely gets close to
+// it, so this is really just a placeholder until real usage data picks a better number.
+const TARGET_TOKENS_PER_MINUTE = 200_000;
 
 const SYSTEM_PROMPT =
   "You are a careful coding assistant working in this project's repository. Use " +
@@ -95,6 +99,7 @@ async function main() {
   ];
   const contextCompiler = new ContextCompiler();
   const outputs = new Map<string, SubtaskOutput>();
+  const budgetGovernor = new BudgetGovernor(TARGET_TOKENS_PER_MINUTE);
 
   const runner = new SubtaskRunner(
     bandit,
@@ -111,6 +116,7 @@ async function main() {
       // DEFAULT_EXPLORE_MAX_TURNS in anthropic-orchestrator-client.ts for the same tradeoff.
       executorMaxTurns: 15,
       hybridRouterOptions: { minPullsBeforeConfident: 3 },
+      budgetGovernor,
       onCategoryDiscovered: (category) => {
         if (bandit.getCandidates(category).length === 0) {
           bandit.register(category, FAST_CHEAP_MODEL_ID, 0.01);
@@ -135,10 +141,14 @@ async function main() {
           console.log(`Context from: ${subtask.dependsOn.join(", ")}`);
         }
 
-        const { output, reward, escalatedAfterFailure } = await runner.run(subtask, outputs);
+        const { output, reward, escalatedAfterFailure, usage } = await runner.run(subtask, outputs);
 
         console.log(`Final: "${output.finalText}"`);
-        console.log(`Reward: ${reward.toFixed(2)}${escalatedAfterFailure ? " (after escalation retry)" : ""}\n`);
+        console.log(`Reward: ${reward.toFixed(2)}${escalatedAfterFailure ? " (after escalation retry)" : ""}`);
+        console.log(
+          `Usage: input=${usage.inputTokens} output=${usage.outputTokens} ` +
+            `cacheRead=${usage.cacheReadTokens ?? 0} cacheWrite=${usage.cacheWriteTokens ?? 0}\n`
+        );
 
         outputs.set(subtask.id, output);
         allOutputs.push(output);

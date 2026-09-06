@@ -89,29 +89,51 @@ export class CategoryRouter {
   }
 
   /**
-   * Draw a sample from each arm's posterior and return the highest cost-adjusted score. Cost is
-   * normalized to [0, 1] relative to the cheapest and priciest candidate *in this category*
-   * before costWeight is applied, so a given costWeight means "how much do I care about being at
-   * the expensive end of this category's price range" consistently — rather than being scaled by
-   * whatever this category's absolute token volume happens to be.
+   * Draw a sample from each arm's posterior and return the highest cost-adjusted score. The cost
+   * term is each arm's *expected* cost, not just its sticker price: `cost + P(fail) * escalationCost`,
+   * where `escalationCost` approximates SubtaskRunner's forced-escalation retry on failure as the
+   * priciest candidate in the category (the escalation client is explicitly steered toward a
+   * stronger, typically pricier, model on a forced escalation -- see AnthropicEscalationClient's
+   * system prompt). Without this, two arms priced identically but with very different failure
+   * rates score identically on cost, even though the flaky one's true expected cost is much closer
+   * to the priciest arm's once its (likely) retry is counted. `P(fail)` uses the arm's stable
+   * decayed mean success rate rather than the same Thompson draw used for the quality term above --
+   * mixing them would let one posterior sample's luck swing both the exploration signal and the
+   * cost estimate together, when only the former is supposed to carry sampling noise.
+   *
+   * Expected cost (not raw cost) is what gets normalized to [0, 1] relative to the cheapest and
+   * priciest candidate *in this category* before costWeight is applied, so a given costWeight still
+   * means "how much do I care about being at the expensive end of this category's price range"
+   * consistently — rather than being scaled by whatever this category's absolute token volume
+   * happens to be.
    */
   select(costWeight = 0): string {
     if (this.arms.size === 0) {
       throw new Error("CategoryRouter has no registered arms");
     }
 
-    let minCost = Infinity;
     let maxCost = -Infinity;
     for (const arm of this.arms.values()) {
-      if (arm.cost < minCost) minCost = arm.cost;
       if (arm.cost > maxCost) maxCost = arm.cost;
     }
-    const costRange = maxCost - minCost;
+    const escalationCost = maxCost;
+
+    let minExpectedCost = Infinity;
+    let maxExpectedCost = -Infinity;
+    const expectedCosts = new Map<string, number>();
+    for (const [modelId, arm] of this.arms) {
+      const meanSuccessRate = arm.alpha / (arm.alpha + arm.beta);
+      const expectedCost = arm.cost + (1 - meanSuccessRate) * escalationCost;
+      expectedCosts.set(modelId, expectedCost);
+      if (expectedCost < minExpectedCost) minExpectedCost = expectedCost;
+      if (expectedCost > maxExpectedCost) maxExpectedCost = expectedCost;
+    }
+    const costRange = maxExpectedCost - minExpectedCost;
 
     let bestModelId: string | null = null;
     let bestScore = -Infinity;
     for (const [modelId, arm] of this.arms) {
-      const normalizedCost = costRange > 0 ? (arm.cost - minCost) / costRange : 0;
+      const normalizedCost = costRange > 0 ? (expectedCosts.get(modelId)! - minExpectedCost) / costRange : 0;
       const score = arm.sample(this.rng) - costWeight * normalizedCost;
       if (score > bestScore) {
         bestScore = score;

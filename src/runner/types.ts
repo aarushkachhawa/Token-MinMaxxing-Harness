@@ -1,4 +1,6 @@
+import type { BudgetGovernor } from "../budget/budget-governor.js";
 import type { SubtaskOutput } from "../context/types.js";
+import type { TokenUsage } from "../executor/types.js";
 import type { HybridRouterOptions } from "../router/hybrid-router.js";
 
 export interface SubtaskRunResult {
@@ -6,6 +8,9 @@ export interface SubtaskRunResult {
   reward: number;
   /** True if the first attempt didn't produce a final answer and a forced-escalation retry ran. */
   escalatedAfterFailure: boolean;
+  /** Total token usage actually spent on this subtask -- both attempts summed if a retry ran,
+   * since the first (failed) attempt still cost real tokens even though its output was discarded. */
+  usage: TokenUsage;
 }
 
 export interface SubtaskRunnerOptions {
@@ -14,4 +19,9 @@ export interface SubtaskRunnerOptions {
   hybridRouterOptions?: HybridRouterOptions;
   /** Called right after classification, before routing -- e.g. to lazily register bandit arms for a newly-seen category. */
   onCategoryDiscovered?: (category: string) => void;
+  /** When set, each attempt asks it for the current costWeight before routing and reports its
+   * real (cache-aware) token spend back to it afterward, so a run's actual burn-rate feeds back
+   * into routing instead of costWeight staying permanently at 0. Optional: omitting it reproduces
+   * the previous behavior exactly (pure quality routing, no spend tracking). */
+  budgetGovernor?: BudgetGovernor;
 }

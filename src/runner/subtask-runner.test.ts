@@ -70,6 +70,7 @@ describe("SubtaskRunner", () => {
     expect(result.escalatedAfterFailure).toBe(false);
     expect(result.output).toEqual({ subtaskId: "a", description: "do the task", finalText: "all done" });
     expect(result.reward).toBe(1); // clean success on all default proxy signals
+    expect(result.usage).toEqual({ inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0 });
   });
 
   it("retries with forced escalation when the first attempt hits maxTurns, and uses the better retry", async () => {
@@ -85,6 +86,9 @@ describe("SubtaskRunner", () => {
     expect(result.escalatedAfterFailure).toBe(true);
     expect(result.output.finalText).toBe("fixed on retry");
     expect(result.reward).toBe(1);
+    // Usage is the SUM of both attempts, not just the winning one's -- the first (failed) attempt
+    // still cost real tokens even though its output was discarded.
+    expect(result.usage).toEqual({ inputTokens: 20, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0 });
   });
 
   it("regression: actually executes against the client for the modelId the router chose, not one fixed client", async () => {
