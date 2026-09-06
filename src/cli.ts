@@ -32,6 +32,7 @@ import { AnthropicJudgeClient } from "./reward/anthropic-judge-client.js";
 import { RewardCollector } from "./reward/reward-collector.js";
 import { ProgressUI } from "./progress-ui.js";
 import { AnthropicEscalationClient } from "./router/anthropic-escalation-client.js";
+import { runModelsCommand } from "./models-command.js";
 import { SubtaskRunner } from "./runner/index.js";
 import {
   createEditFileTool,
@@ -51,6 +52,8 @@ try {
 }
 
 const ROUTER_STATE_PATH = join(process.cwd(), "router-state.sqlite");
+const MODEL_SELECTION_PATH = join(process.cwd(), "model-selection.json");
+const DOT_ENV_PATH = join(process.cwd(), ".env");
 // Real, constructable model ids -- these ARE what gets registered as bandit arms below, so
 // whatever the router picks is what AnthropicModelClientFactory can actually build a client for.
 const FAST_CHEAP_MODEL_ID = "claude-haiku-4-5-20251001";
@@ -103,6 +106,7 @@ function printHelp(): void {
     [
       theme.bold("Commands:"),
       `  ${theme.neon("/help")}          show this help`,
+      `  ${theme.neon("/models")}        choose which models are allowed for this project`,
       `  ${theme.neon("/reset")}         forget conversation history and start a fresh topic`,
       `  ${theme.neon("/exit, /quit")}   exit the CLI`,
     ].join("\n")
@@ -113,6 +117,7 @@ function printBanner(): void {
   console.log(
     drawBanner("TOKEN-MINMAXXING-HARNESS", "agentic coding harness · hybrid model router", [
       `${theme.neon("❯")} /help    ${theme.dim("show available commands")}`,
+      `${theme.neon("❯")} /models  ${theme.dim("choose which models are allowed")}`,
       `${theme.neon("❯")} /reset   ${theme.dim("clear conversation history")}`,
       `${theme.neon("❯")} /exit    ${theme.dim("quit")}`,
     ])
@@ -380,6 +385,12 @@ async function main() {
     if (line === "/reset") {
       conversationHistory.length = 0;
       console.log(theme.success("Conversation history cleared.\n"));
+      continue;
+    }
+    if (line === "/models") {
+      fallbackRl?.close();
+      await runModelsCommand({ selectionPath: MODEL_SELECTION_PATH, dotEnvPath: DOT_ENV_PATH });
+      if (!framedPrompt) fallbackRl = createInterface({ input: process.stdin, output: process.stdout });
       continue;
     }
 

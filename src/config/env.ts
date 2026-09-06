@@ -1,3 +1,5 @@
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+
 export function getAnthropicApiKey(): string {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) {
@@ -7,4 +9,40 @@ export function getAnthropicApiKey(): string {
     );
   }
   return key;
+}
+
+export function hasEnvVar(name: string): boolean {
+  return Boolean(process.env[name]);
+}
+
+/**
+ * Replaces (or appends) one `NAME=value` line in a .env file's text, leaving every other line
+ * untouched -- split out from persistApiKey so the line-rewrite logic can be unit tested without
+ * touching the filesystem.
+ */
+export function upsertDotEnvLine(contents: string, name: string, value: string): string {
+  const escapedValue = value.includes(" ") || value.includes("#") ? `"${value}"` : value;
+  const line = `${name}=${escapedValue}`;
+  // Drop a trailing blank line from the split so appending never leaves a stray empty line
+  // in the middle of the file once it's rejoined below.
+  const lines = contents.split("\n").filter((l, i, arr) => !(l === "" && i === arr.length - 1));
+  const existingIndex = lines.findIndex((l) => l.startsWith(`${name}=`));
+  if (existingIndex >= 0) {
+    lines[existingIndex] = line;
+  } else {
+    lines.push(line);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+/**
+ * Sets an API key for the running process (so it takes effect immediately, same session) and
+ * persists it into the project's .env file (so it's still there next time the CLI starts) --
+ * mirrors the existing `process.loadEnvFile()` / ANTHROPIC_API_KEY convention rather than
+ * introducing a second, competing place to store credentials.
+ */
+export function persistApiKey(name: string, value: string, dotEnvPath: string): void {
+  process.env[name] = value;
+  const existing = existsSync(dotEnvPath) ? readFileSync(dotEnvPath, "utf-8") : "";
+  writeFileSync(dotEnvPath, upsertDotEnvLine(existing, name, value));
 }
