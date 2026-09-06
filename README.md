@@ -24,6 +24,11 @@ you exit -- a follow-up like "now do the same for the other file" resolves corre
 you asked before.
 
 - Type a request and press enter.
+- `/models` -- toggle which models (Anthropic, OpenAI, Google, or local Ollama) are allowed for
+  this project; a new project starts with none enabled. Turning one on prompts for its API key if
+  it needs one, or offers to `ollama pull` it if it's a local model you haven't downloaded yet.
+  Selection is saved to `model-selection.json`. Routing requests to only the enabled models is
+  separate, in-progress work -- this just manages which ones are available.
 - `/reset` -- clears the session's conversation history without losing learned router state.
 - `/exit` or `/quit` -- ends the session (also persists router state to disk).
 

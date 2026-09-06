@@ -29,6 +29,39 @@ export function visibleLength(text: string): number {
   return text.replace(ANSI_RE, "").length;
 }
 
+/**
+ * Cuts `text` down to at most `maxVisible` *visible* columns, leaving ANSI color escapes intact
+ * (they cost no columns) and closing with a reset if anything was dropped mid-color. Needed
+ * wherever a line has to be guaranteed to fit the terminal's width -- a redraw-in-place UI that
+ * lets even one line wrap onto a second terminal row silently invalidates its own
+ * "move up N lines" math, since N counts newlines and the terminal counts rows.
+ */
+export function truncateVisible(text: string, maxVisible: number): string {
+  if (maxVisible <= 0) return "";
+  if (visibleLength(text) <= maxVisible) return text;
+
+  let out = "";
+  let visible = 0;
+  let sawEscape = false;
+  for (let i = 0; i < text.length; ) {
+    if (text[i] === "\x1b") {
+      const end = text.indexOf("m", i);
+      if (end === -1) break;
+      out += text.slice(i, end + 1);
+      sawEscape = true;
+      i = end + 1;
+      continue;
+    }
+    // Step by code point so a multi-byte character (e.g. an emoji) is never split in half.
+    const codePoint = String.fromCodePoint(text.codePointAt(i) as number);
+    if (visible + 1 > maxVisible) break;
+    out += codePoint;
+    visible += 1;
+    i += codePoint.length;
+  }
+  return sawEscape ? `${out}\x1b[0m` : out;
+}
+
 /** Renders `text` with each non-space character interpolated between two neon-blue tones. */
 export function gradient(text: string): string {
   if (!colorEnabled) return text;
