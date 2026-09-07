@@ -18,10 +18,19 @@ const DELETE_KEY = "\x1b[3~";
  * (manually, not via the terminal's own autowrap -- see askLive()'s redraw()), with the bottom
  * divider following it back down.
  *
- * The frame lives exactly as long as the line being typed: submitting erases it entirely (see
- * finish()), leaving the caller to echo the submitted text back in whatever transcript form it
- * likes. So the box only ever appears at the bottom of the screen, around the current input,
- * instead of one spent box per turn stacking up through the scrollback.
+ * The frame is permanent and bottom-anchored: it's drawn once via show() and stays on screen
+ * between turns, not just while a line is being typed. Everything else the CLI prints goes
+ * through print()/replaceLast(), which erase the frame, emit the line where the frame's top row
+ * was, and redraw the frame directly beneath it. So each printed line pushes the frame one row
+ * further down the screen until it reaches the bottom, after which the terminal's own scrolling
+ * takes over and the frame simply stays put while the transcript scrolls up behind it -- the
+ * behavior you'd get from a real TUI's footer, without needing full screen control.
+ *
+ * Submitting doesn't tear the frame down either: finish() erases the typed line and immediately
+ * redraws an empty frame in its place, leaving the caller to echo the submitted text back in
+ * whatever transcript form it likes (that echo is just another print(), so the frame scoots down
+ * a row and the message lands where it used to be). What never happens is a spent box left
+ * behind: exactly one frame exists, always at the bottom.
  *
  * `readline` can't coexist with a pre-drawn frame: it repaints its prompt with "erase from cursor
  * to end of screen" (`\x1b[0J`) on every redraw, wiping anything drawn below the cursor before
@@ -46,23 +55,99 @@ const DELETE_KEY = "\x1b[3~";
  */
 export class FramedPrompt {
   private readonly stream: NodeJS.ReadStream;
+  private readonly label: string;
   private queuedLines: string[] = [];
   private rawModeActive = false;
+  /**
+   * Whether the idle frame is currently on screen. While it is, the cursor is always parked at
+   * column 0 of the frame's top row (the upper divider) -- that parked position is what lets
+   * hide() erase the frame with a single erase-to-end-of-screen and lets print() drop its line
+   * exactly where the frame was.
+   */
+  private frameVisible = false;
+  /** Terminal rows the most recently printed line occupies, so replaceLast() knows how far up to go. */
+  private lastLineRows = 0;
 
-  constructor(stream: NodeJS.ReadStream = process.stdin) {
+  constructor(label: string, stream: NodeJS.ReadStream = process.stdin) {
+    this.label = label;
     this.stream = stream;
   }
 
-  async ask(label: string): Promise<string> {
-    const queued = this.queuedLines.shift();
-    if (queued !== undefined) return queued;
-    return this.askLive(label);
+  /** Draws the idle frame at the cursor and parks the cursor at its top row. Idempotent. */
+  show(): void {
+    if (this.frameVisible) return;
+    const divider = promptDivider();
+    // No trailing newline after the last divider: the cursor should end up *on* the frame's
+    // bottom row, not below it, so moving back up two rows lands on the top row. Every move here
+    // is relative, so drawing the frame at the bottom of the screen (which scrolls) still parks
+    // the cursor correctly.
+    process.stdout.write(`${divider}\n${this.label}\n${divider}`);
+    process.stdout.write("\r\x1b[2A");
+    this.frameVisible = true;
   }
 
-  /** Releases raw mode without waiting for a pending line -- used on shutdown (e.g. /exit, SIGINT). */
+  /** Erases the frame, leaving the cursor on the row its top divider occupied. Idempotent. */
+  hide(): void {
+    if (!this.frameVisible) return;
+    process.stdout.write("\x1b[0J");
+    this.frameVisible = false;
+  }
+
+  /**
+   * Emits one transcript entry above the frame: the frame comes down, the text lands on the row
+   * it occupied, and the frame is redrawn beneath. `text` may span several lines.
+   */
+  print(text: string): void {
+    const wasVisible = this.frameVisible;
+    this.hide();
+    process.stdout.write(`${text}\n`);
+    this.lastLineRows = rowsOccupied(text);
+    if (wasVisible) this.show();
+  }
+
+  /**
+   * Overwrites the entry printed most recently instead of appending a new one -- how a status
+   * line updates itself in place without the frame below it drifting (see ProgressUI). Only
+   * meaningful immediately after a print()/replaceLast() with nothing else written in between;
+   * a caller that can't guarantee that should print() a fresh line instead.
+   */
+  replaceLast(text: string): void {
+    const wasVisible = this.frameVisible;
+    this.hide();
+    if (this.lastLineRows > 0) process.stdout.write(`\x1b[${this.lastLineRows}A`);
+    process.stdout.write(`\r\x1b[0J${text}\n`);
+    this.lastLineRows = rowsOccupied(text);
+    if (wasVisible) this.show();
+  }
+
+  /**
+   * Runs `fn` with the frame off screen, restoring it afterwards -- for anything that takes the
+   * terminal over on its own terms (an approval gate's prompt, /models' menu) and would otherwise
+   * draw straight through the frame.
+   */
+  async withHidden<T>(fn: () => Promise<T>): Promise<T> {
+    const wasVisible = this.frameVisible;
+    this.hide();
+    try {
+      return await fn();
+    } finally {
+      if (wasVisible) this.show();
+    }
+  }
+
+  async ask(): Promise<string> {
+    const queued = this.queuedLines.shift();
+    if (queued !== undefined) return queued;
+    // The live editor repaints the frame region itself, starting from a clean row.
+    this.hide();
+    return this.askLive(this.label);
+  }
+
+  /** Takes the frame down and releases raw mode -- used on shutdown (e.g. /exit, SIGINT). */
   release(): void {
     if (this.rawModeActive) process.stdout.write("\x1b[?7h"); // restore autowrap if mid-askLive()
     this.disableRawMode();
+    this.hide();
   }
 
   private askLive(label: string): Promise<string> {
@@ -155,12 +240,13 @@ export class FramedPrompt {
         process.stdout.off("resize", onResize);
         this.disableRawMode();
         process.stdout.write("\x1b[?7h"); // restore autowrap before any normal output follows
-        // Wipe the whole frame -- top divider, every input row, bottom divider -- leaving the
-        // cursor on the row the top divider occupied. The box is a live editing affordance, not a
-        // transcript entry: leaving one behind per turn stacks empty boxes through the scrollback
-        // and buries the actual conversation. The caller echoes the submitted text back in
-        // message form instead (formatUserMessage() in cli-theme.ts), so the frame only ever
-        // exists at the bottom of the screen, around the line currently being typed.
+        // Wipe the frame the line was typed into -- top divider, every input row, bottom divider
+        // -- and immediately put an empty one back in its place. The typed text isn't a
+        // transcript entry, so leaving the spent box behind would stack one per turn through the
+        // scrollback and bury the actual conversation; but taking the box away entirely would
+        // leave the screen without a prompt while the request runs. The caller echoes the
+        // submitted text back in message form (formatUserMessage() in cli-theme.ts) via print(),
+        // which lands it on the row the box occupied and scoots the box down one row.
         //
         // Moving up past the input rows lands on the top divider (the +1), and erase-to-end-of-
         // screen takes it and everything below. Safe for the same reason redraw()'s own `\x1b[0J`
@@ -168,6 +254,8 @@ export class FramedPrompt {
         // to destroy.
         process.stdout.write(`\x1b[${cursorRowOffset + 1}A`);
         process.stdout.write("\r\x1b[0J");
+        this.frameVisible = false;
+        this.show();
         resolve(result);
       };
 
@@ -269,6 +357,20 @@ export class FramedPrompt {
     this.stream.pause();
     this.rawModeActive = false;
   }
+}
+
+/**
+ * How many terminal rows `text` takes up once printed -- its own line breaks plus however many
+ * more the terminal's wrapping adds, measured in visible columns so ANSI color escapes don't
+ * inflate the count. replaceLast() moves up exactly this far to land on the line's first row.
+ */
+function rowsOccupied(text: string): number {
+  const width = process.stdout.columns || 80;
+  let rows = 0;
+  for (const line of text.split("\n")) {
+    rows += Math.max(1, Math.ceil(visibleLength(line) / width));
+  }
+  return rows;
 }
 
 function splitPastedLines(text: string): string[] {

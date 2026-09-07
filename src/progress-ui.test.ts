@@ -149,4 +149,69 @@ describe("ProgressUI", () => {
       expect(tty.writes).toHaveLength(0);
     });
   });
+
+  describe("with a sticky-frame host", () => {
+    function fakeHost() {
+      const calls: Array<[string, string]> = [];
+      const host = {
+        print: (text: string) => calls.push(["print", text]),
+        replaceLast: (text: string) => calls.push(["replaceLast", text]),
+        withHidden: async <T>(fn: () => Promise<T>) => {
+          calls.push(["withHidden", "start"]);
+          const result = await fn();
+          calls.push(["withHidden", "end"]);
+          return result;
+        },
+      };
+      return { host, calls };
+    }
+
+    it("prints the first step, then rewrites that same entry for later ones", () => {
+      const { host, calls } = fakeHost();
+      const ui = new ProgressUI({ host });
+      ui.start("Thinking...");
+      ui.setStep("Planning...");
+      ui.setStep("Running...");
+      expect(calls.map((c) => c[0])).toEqual(["print", "replaceLast", "replaceLast"]);
+      expect(calls[2][1]).toContain("Running...");
+    });
+
+    it("writes nothing to the raw stream -- the host owns the cursor", () => {
+      const tty = fakeTty();
+      const { host } = fakeHost();
+      const ui = new ProgressUI({ host, stream: tty.stream });
+      ui.start("Thinking...");
+      ui.setStep("Planning...");
+      ui.stop();
+      expect(tty.writes).toEqual([]);
+    });
+
+    it("goes through the host to hide the frame while a gate has the terminal", async () => {
+      const { host, calls } = fakeHost();
+      const ui = new ProgressUI({ host });
+      ui.start("Thinking...");
+      await ui.withPaused(async () => 7);
+      expect(calls.map((c) => c[0])).toEqual(["print", "withHidden", "withHidden"]);
+    });
+
+    it("starts a fresh entry after a pause rather than overwriting the gate's output", async () => {
+      const { host, calls } = fakeHost();
+      const ui = new ProgressUI({ host });
+      ui.start("Thinking...");
+      await ui.withPaused(async () => {});
+      calls.length = 0;
+      ui.setStep("Planning...");
+      expect(calls[0][0]).toBe("print");
+    });
+
+    it("start() after stop() begins a new entry instead of rewriting the finished one", () => {
+      const { host, calls } = fakeHost();
+      const ui = new ProgressUI({ host });
+      ui.start("Thinking...");
+      ui.stop();
+      calls.length = 0;
+      ui.start("Compacting older context...");
+      expect(calls[0][0]).toBe("print");
+    });
+  });
 });

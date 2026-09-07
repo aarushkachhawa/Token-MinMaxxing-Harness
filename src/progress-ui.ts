@@ -21,6 +21,12 @@ import { theme, truncateVisible } from "./cli-theme.js";
  * `\r` returning to the wrong row, which is the same class of bug FramedPrompt's manual chunking
  * exists to avoid.
  *
+ * When a `host` is supplied -- the interactive CLI, where FramedPrompt keeps a frame pinned below
+ * the transcript -- updating the row with a bare `\r` would fight that frame for the cursor, so
+ * the same two operations are delegated instead: the first step of a run is print()ed as a new
+ * transcript line and each subsequent one replaceLast()es it. The line is already newline-
+ * terminated by the host, so stop() has nothing to commit and only has to stop claiming the row.
+ *
  * There was also an expandable detail box (press 'e', toggling a bordered box of every log() line
  * along the way) with its own raw-mode keypress listener. Removed for looking cluttered rather
  * than useful in practice -- log() is now a no-op so call sites don't need to change, kept in case
@@ -29,21 +35,38 @@ import { theme, truncateVisible } from "./cli-theme.js";
  * re-emit SIGINT in the first place, so without it, Ctrl+C during a request now goes through the
  * terminal's normal signal delivery instead.
  */
+/**
+ * The subset of FramedPrompt's sticky-frame API this class needs: somewhere to put a line that
+ * stays above the frame, and a way to rewrite the one it put there last.
+ */
+export interface ProgressHost {
+  print(text: string): void;
+  replaceLast(text: string): void;
+  withHidden<T>(fn: () => Promise<T>): Promise<T>;
+}
+
 export interface ProgressUIOptions {
-  /** Where in-place updates are written. Defaults to process.stdout. */
+  /**
+   * Renders the status line above a pinned input frame. When omitted, the status line is written
+   * straight to `stream` instead (in place on a TTY, one line per step otherwise).
+   */
+  host?: ProgressHost;
+  /** Where in-place updates are written when there's no host. Defaults to process.stdout. */
   stream?: NodeJS.WriteStream;
   /** Force the redraw-in-place path on or off. Defaults to whether `stream` is a TTY. */
   interactive?: boolean;
 }
 
 export class ProgressUI {
+  private readonly host: ProgressHost | undefined;
   private readonly stream: NodeJS.WriteStream;
   private readonly interactive: boolean;
   private step = "";
-  /** True while an uncommitted status line is sitting on the current terminal row. */
+  /** True while this class still owns the row its status line is on and may rewrite it. */
   private live = false;
 
   constructor(options: ProgressUIOptions = {}) {
+    this.host = options.host;
     this.stream = options.stream ?? process.stdout;
     this.interactive = options.interactive ?? Boolean(this.stream.isTTY);
   }
@@ -64,22 +87,30 @@ export class ProgressUI {
   log(_line: string): void {}
 
   /**
-   * Ends the current status line, committing it with a newline so it stays on screen as a record
-   * of where the request got to and the next output starts on a fresh row. Safe to call when
-   * nothing is live (the `finally` safety net in cli.ts leans on that).
+   * Ends the current status line, leaving it on screen as a record of where the request got to
+   * and making sure the next output starts on a fresh row. Safe to call when nothing is live (the
+   * `finally` safety net in cli.ts leans on that).
    */
   stop(): void {
     if (!this.live) return;
     this.live = false;
-    this.stream.write("\n");
+    // With a host the line was newline-terminated when it was printed; only the bare-stream path
+    // has an unterminated row to close off.
+    if (!this.host && this.interactive) this.stream.write("\n");
   }
 
   /**
-   * Erases the live status line for the duration of `fn` and restores it afterwards, so anything
-   * that takes over the terminal in between (an approval gate's own prompt) gets a clean row to
-   * draw on instead of appending to a half-written status line.
+   * Clears the way for the duration of `fn`, so anything that takes over the terminal in between
+   * (an approval gate's own prompt) gets a clean row to draw on instead of appending to a
+   * half-written status line -- with a host, that also means taking the pinned frame down. Either
+   * way the status line stops being ours to rewrite afterwards, since `fn` has printed over
+   * everything below it: the next step starts a new line rather than overwriting `fn`'s output.
    */
   async withPaused<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.host) {
+      this.live = false;
+      return this.host.withHidden(fn);
+    }
     const wasLive = this.live;
     this.erase();
     try {
@@ -91,6 +122,12 @@ export class ProgressUI {
 
   private render(): void {
     const line = `${theme.neon("›")} ${this.step}`;
+    if (this.host) {
+      if (this.live) this.host.replaceLast(line);
+      else this.host.print(line);
+      this.live = true;
+      return;
+    }
     if (!this.interactive) {
       console.log(line);
       return;
