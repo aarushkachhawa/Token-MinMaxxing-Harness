@@ -6,6 +6,15 @@ export { AnthropicModelClient, type AnthropicModelClientOptions } from "./anthro
 export { Executor } from "./executor.js";
 export { fakeTool, ScriptedModelClient, ScriptedModelClientFactory } from "./fakes.js";
 export {
+  MultiProviderModelClientFactory,
+  type MultiProviderModelClientFactoryOptions,
+} from "./multi-provider-model-client-factory.js";
+export {
+  OllamaModelClientFactory,
+  type OllamaModelClientFactoryOptions,
+} from "./ollama-model-client-factory.js";
+export { OllamaModelClient, type OllamaModelClientOptions } from "./ollama-model-client.js";
+export {
   cachedSystemPrompt,
   EPHEMERAL_CACHE_CONTROL,
   withCacheBreakpointOnLastMessage,

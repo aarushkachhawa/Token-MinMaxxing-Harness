@@ -46,3 +46,12 @@ export function persistApiKey(name: string, value: string, dotEnvPath: string): 
   const existing = existsSync(dotEnvPath) ? readFileSync(dotEnvPath, "utf-8") : "";
   writeFileSync(dotEnvPath, upsertDotEnvLine(existing, name, value));
 }
+
+const DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434/v1";
+
+/** Unlike the Anthropic key, Ollama support is opt-in and needs no credential -- a local server
+ * at the default address is the common case, so this never throws. Callers decide whether the
+ * absence of OLLAMA_BASE_URL means "use the default" or "don't wire up Ollama at all". */
+export function getOllamaBaseUrl(): string {
+  return process.env.OLLAMA_BASE_URL ?? DEFAULT_OLLAMA_BASE_URL;
+}

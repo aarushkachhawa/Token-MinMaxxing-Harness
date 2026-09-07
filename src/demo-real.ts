@@ -10,9 +10,11 @@
 import { join } from "node:path";
 import { BudgetGovernor } from "./budget/index.js";
 import { AnthropicClassifierClient, DEFAULT_CLASSIFICATION_RULES, TaskClassifier } from "./classifier/index.js";
-import { getAnthropicApiKey } from "./config/env.js";
+import { getAnthropicApiKey, getOllamaBaseUrl } from "./config/env.js";
 import { ContextCompiler, type SubtaskOutput } from "./context/index.js";
 import { AnthropicModelClientFactory } from "./executor/anthropic-model-client-factory.js";
+import { MultiProviderModelClientFactory } from "./executor/multi-provider-model-client-factory.js";
+import { OllamaModelClientFactory } from "./executor/ollama-model-client-factory.js";
 import { AnthropicOrchestratorClient, Orchestrator } from "./orchestrator/index.js";
 import { loadRouterState, saveRouterState, SqliteRouterStore } from "./persistence/index.js";
 import { AnthropicJudgeClient } from "./reward/anthropic-judge-client.js";
@@ -32,9 +34,12 @@ import {
 
 const ROUTER_STATE_PATH = join(process.cwd(), "router-state.sqlite");
 // Real, constructable model ids -- these ARE what gets registered as bandit arms below, so
-// whatever the router picks is what AnthropicModelClientFactory can actually build a client for.
+// whatever the router picks is what modelClientFactory can actually build a client for -- Anthropic
+// or (optionally) an "ollama:"-prefixed local model, see MultiProviderModelClientFactory.
 const FAST_CHEAP_MODEL_ID = "claude-haiku-4-5-20251001";
 const SMART_EXPENSIVE_MODEL_ID = "claude-sonnet-5";
+// See cli.ts for the reasoning behind gating this on an env var rather than always registering it.
+const OLLAMA_MODEL_ID = process.env.OLLAMA_MODEL ? `ollama:${process.env.OLLAMA_MODEL}` : undefined;
 // See cli.ts for the reasoning behind this default -- a single-request run rarely gets close to
 // it, so this is really just a placeholder until real usage data picks a better number.
 const TARGET_TOKENS_PER_MINUTE = 200_000;
@@ -86,7 +91,10 @@ async function main() {
         console.log(`Judge verdict: ${verdict.score.toFixed(2)} (${verdict.confidence}) -- ${verdict.rationale}`),
     }),
   });
-  const modelClientFactory = new AnthropicModelClientFactory({ apiKey: getAnthropicApiKey() });
+  const modelClientFactory = new MultiProviderModelClientFactory({
+    anthropic: new AnthropicModelClientFactory({ apiKey: getAnthropicApiKey() }),
+    ollama: OLLAMA_MODEL_ID ? new OllamaModelClientFactory({ baseUrl: getOllamaBaseUrl() }) : undefined,
+  });
   // write_file/edit_file/run_command here are scoped to this actual repository (not a scratch
   // dir like write-file-check.ts), so every write, edit, or command is gated on an interactive
   // terminal approval that defaults to refusing -- see the *-approval-gate.ts files.
@@ -121,6 +129,13 @@ async function main() {
         if (bandit.getCandidates(category).length === 0) {
           bandit.register(category, FAST_CHEAP_MODEL_ID, 0.01);
           bandit.register(category, SMART_EXPENSIVE_MODEL_ID, 0.3);
+        }
+        // See cli.ts for why this is outside the "brand new category" guard above: router state
+        // persists across runs here too, so a category discovered before OLLAMA_MODEL was set
+        // would otherwise never get this arm -- register() is idempotent, so repeating it once the
+        // arm already exists is free.
+        if (OLLAMA_MODEL_ID) {
+          bandit.register(category, OLLAMA_MODEL_ID, 0);
         }
       },
     }

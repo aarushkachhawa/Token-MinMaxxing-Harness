@@ -55,10 +55,12 @@ describe("renderModelList", () => {
       configuredEnvVars: new Set(),
     });
 
+    const sonnetIndex = MODEL_CATALOG.findIndex((m) => m.label === "Claude Sonnet 5") + 1;
+    const haikuIndex = MODEL_CATALOG.findIndex((m) => m.label === "Claude Haiku 4.5") + 1;
     const enabledLine = output.split("\n").find((l) => l.includes("Claude Sonnet 5"));
     const disabledLine = output.split("\n").find((l) => l.includes("Claude Haiku 4.5"));
-    expect(enabledLine).toContain("<success>5. Claude Sonnet 5");
-    expect(disabledLine).toContain("<dim>4. Claude Haiku 4.5");
+    expect(enabledLine).toContain(`<success>${sonnetIndex}. Claude Sonnet 5`);
+    expect(disabledLine).toContain(`<dim>${haikuIndex}. Claude Haiku 4.5`);
   });
 
   it("marks a cloud model needing an API key vs one that already has it configured", () => {

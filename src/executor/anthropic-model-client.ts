@@ -1,11 +1,12 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
-import { generateText, tool, type ModelMessage, type TextPart, type ToolCallPart } from "ai";
+import { generateText, tool } from "ai";
+import { toModelMessage } from "./message-conversion.js";
 import {
   cachedSystemPrompt,
   EPHEMERAL_CACHE_CONTROL_LONG,
   withCacheBreakpointOnLastMessage,
 } from "./prompt-caching.js";
-import type { GenerateOptions, GenerateResult, Message, ModelClient, ToolCall } from "./types.js";
+import type { GenerateOptions, GenerateResult, ModelClient, ToolCall } from "./types.js";
 
 export interface AnthropicModelClientOptions {
   apiKey: string;
@@ -75,34 +76,5 @@ export class AnthropicModelClient implements ModelClient {
         cacheWriteTokens: result.usage.inputTokenDetails?.cacheWriteTokens ?? 0,
       },
     };
-  }
-}
-
-function toModelMessage(message: Message): ModelMessage {
-  switch (message.role) {
-    case "user":
-      return { role: "user", content: message.content };
-    case "assistant": {
-      const content: Array<TextPart | ToolCallPart> = [];
-      if (message.content) {
-        content.push({ type: "text", text: message.content });
-      }
-      for (const call of message.toolCalls) {
-        content.push({ type: "tool-call", toolCallId: call.id, toolName: call.toolName, input: call.args });
-      }
-      return { role: "assistant", content };
-    }
-    case "tool":
-      return {
-        role: "tool",
-        content: [
-          {
-            type: "tool-result",
-            toolCallId: message.toolCallId,
-            toolName: message.toolName,
-            output: { type: "json", value: message.result as never },
-          },
-        ],
-      };
   }
 }

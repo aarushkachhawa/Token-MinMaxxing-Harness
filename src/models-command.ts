@@ -311,8 +311,9 @@ export interface ModelsCommandOptions {
  * is checked up front (see checkOllamaStatus) so local models' downloaded state is accurate from
  * the first render. Toggling a model on runs whatever setup it needs (API key prompt, or an
  * Ollama download prompt) before it actually gets enabled; declining that setup leaves it off.
- * Execution doesn't read this selection yet -- routing requests to only the enabled models is
- * separate, in-progress work.
+ * For Ollama entries, cli.ts reads this same selection file on every subtask to decide which
+ * local-model bandit arms exist -- so toggling one on here takes effect on the very next request,
+ * no restart needed. (OpenAI/Google entries still have no execution wiring -- see model-catalog.ts.)
  */
 export async function runModelsCommand(options: ModelsCommandOptions): Promise<void> {
   const store = ModelSelectionStore.load(options.selectionPath);
