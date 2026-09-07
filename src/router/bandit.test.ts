@@ -58,6 +58,43 @@ describe("Router", () => {
     expect(arm.beta).toBe(1);
   });
 
+  it("removeArm() makes the arm unselectable and drops it from getCandidates()", () => {
+    const router = new Router();
+    router.register("small-edit", "cheap", 0.01, 2, 1, 1);
+    router.register("small-edit", "strong", 0.3, 2, 1, 1);
+    router.reportOutcome("small-edit", "cheap", 1); // give it real history to prove it's discarded
+
+    router.removeArm("small-edit", "cheap");
+
+    expect(router.getCandidates("small-edit").map((c) => c.modelId)).toEqual(["strong"]);
+    expect(router.getArm("small-edit", "cheap")).toBeUndefined();
+    for (let i = 0; i < 20; i++) {
+      expect(router.route("small-edit")).toBe("strong");
+    }
+  });
+
+  it("removeArm() on an unregistered category or model is a harmless no-op", () => {
+    const router = new Router();
+    router.register("small-edit", "cheap", 0.01);
+
+    expect(() => router.removeArm("no-such-category", "cheap")).not.toThrow();
+    expect(() => router.removeArm("small-edit", "no-such-model")).not.toThrow();
+    expect(router.getCandidates("small-edit").map((c) => c.modelId)).toEqual(["cheap"]);
+  });
+
+  it("re-registering a removed arm starts it fresh at its prior, not its old history", () => {
+    const router = new Router();
+    router.register("small-edit", "cheap", 0.01, 2, 1, 1);
+    router.reportOutcome("small-edit", "cheap", 1);
+    router.removeArm("small-edit", "cheap");
+
+    router.register("small-edit", "cheap", 0.01, 2, 1, 1);
+
+    const arm = router.getArm("small-edit", "cheap")!;
+    expect(arm.alpha).toBe(2);
+    expect(arm.beta).toBe(1);
+  });
+
   it("getAllArms() returns full state for every arm across every category", () => {
     const router = new Router();
     router.register("small-edit", "cheap", 0.01, 2, 1, 1);

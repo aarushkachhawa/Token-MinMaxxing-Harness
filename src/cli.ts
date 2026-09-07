@@ -2,7 +2,7 @@
 /**
  * Genuinely interactive terminal CLI for the real pipeline -- same wiring as demo-real.ts
  * (AnthropicOrchestratorClient, TaskClassifier, SqliteRouterStore-backed bandit, RewardCollector,
- * AnthropicModelClientFactory, the five real tools, SubtaskRunner), but instead of running a single
+ * MultiProviderModelClientFactory, the five real tools, SubtaskRunner), but instead of running a single
  * request from argv and exiting, it opens a REPL (`> `) that keeps the pipeline's long-lived
  * dependencies (router state, bandit, tools) alive across every request typed in, until /exit.
  * Also remembers the session's conversation so a follow-up like "now do the same for the other
@@ -16,9 +16,12 @@ import { join } from "node:path";
 import { BudgetGovernor } from "./budget/index.js";
 import { AnthropicClassifierClient, DEFAULT_CLASSIFICATION_RULES, TaskClassifier } from "./classifier/index.js";
 import { drawBanner, formatResponse, theme } from "./cli-theme.js";
-import { getAnthropicApiKey } from "./config/env.js";
+import { getAnthropicApiKey, getOllamaBaseUrl } from "./config/env.js";
+import { costForWorkerModelId, enabledWorkerModelIds } from "./config/worker-models.js";
 import { ContextCompiler, type SubtaskOutput } from "./context/index.js";
 import { AnthropicModelClientFactory } from "./executor/anthropic-model-client-factory.js";
+import { MultiProviderModelClientFactory } from "./executor/multi-provider-model-client-factory.js";
+import { OllamaModelClientFactory } from "./executor/ollama-model-client-factory.js";
 import { FramedPrompt } from "./framed-prompt.js";
 import { type ConversationSummarizerClient, AnthropicConversationSummarizerClient } from "./memory/index.js";
 import {
@@ -54,10 +57,11 @@ try {
 const ROUTER_STATE_PATH = join(process.cwd(), "router-state.sqlite");
 const MODEL_SELECTION_PATH = join(process.cwd(), "model-selection.json");
 const DOT_ENV_PATH = join(process.cwd(), ".env");
-// Real, constructable model ids -- these ARE what gets registered as bandit arms below, so
-// whatever the router picks is what AnthropicModelClientFactory can actually build a client for.
-const FAST_CHEAP_MODEL_ID = "claude-haiku-4-5-20251001";
-const SMART_EXPENSIVE_MODEL_ID = "claude-sonnet-5";
+// No fixed model ids here: which models the bandit is even allowed to pick from -- Anthropic or
+// an "ollama:"-prefixed local model, see MultiProviderModelClientFactory -- is entirely driven by
+// /models' current selection (enabledWorkerModelIds(), reconciled against the bandit's registered
+// arms on every subtask in onCategoryDiscovered below). Enabling/disabling a model there is a real
+// allowlist, not a suggestion: nothing not currently enabled is ever selectable.
 // Burn-rate target the budget governor throttles routing against once exceeded -- generous enough
 // that ordinary interactive use (a handful of subtasks a minute) never triggers cost throttling on
 // its own; only a sustained heavy burn rate (many large or escalated subtasks back to back) pushes
@@ -283,7 +287,13 @@ async function main() {
         ),
     }),
   });
-  const modelClientFactory = new AnthropicModelClientFactory({ apiKey: getAnthropicApiKey() });
+  // Always includes the Ollama factory: which local models actually get registered as bandit
+  // arms is decided live from /models' selection (see onCategoryDiscovered below), not here --
+  // constructing the factory itself is cheap and does nothing until a client is actually requested.
+  const modelClientFactory = new MultiProviderModelClientFactory({
+    anthropic: new AnthropicModelClientFactory({ apiKey: getAnthropicApiKey() }),
+    ollama: new OllamaModelClientFactory({ baseUrl: getOllamaBaseUrl() }),
+  });
   // Every approval gate opens its own readline interface on stdin -- withPaused() releases the
   // spinner's raw-mode keypress listener first so the two never fight over input.
   const tools = [
@@ -318,10 +328,30 @@ async function main() {
       executorMaxTurns: 15,
       hybridRouterOptions: { minPullsBeforeConfident: 3 },
       budgetGovernor,
+      // Re-derives the category's full candidate set from /models' current selection on every
+      // subtask (not just once): router state persists across runs (loadRouterState), and the
+      // user can toggle a model on or off mid-session, so this has to be a live reconciliation,
+      // not a one-time bootstrap. /models is a real allowlist here -- a model not currently
+      // enabled must not be selectable, not just deprioritized -- so this both registers every
+      // enabled model (register() is idempotent: a repeat call refreshes cost and leaves any
+      // already-learned alpha/beta alone) *and* removeArm()s any previously-registered arm that's
+      // no longer enabled, since register()'s idempotency alone only protects arms that stay
+      // enabled and never runs for one that's been turned off.
       onCategoryDiscovered: (category) => {
-        if (bandit.getCandidates(category).length === 0) {
-          bandit.register(category, FAST_CHEAP_MODEL_ID, 0.01);
-          bandit.register(category, SMART_EXPENSIVE_MODEL_ID, 0.3);
+        const workerModelIds = new Set(enabledWorkerModelIds(MODEL_SELECTION_PATH));
+        if (workerModelIds.size === 0) {
+          throw new Error(
+            "No usable models are enabled. Run /models and turn on at least one Anthropic model " +
+              "(needs an API key) or local Ollama model (needs Ollama running) before making a request."
+          );
+        }
+        for (const candidate of bandit.getCandidates(category)) {
+          if (!workerModelIds.has(candidate.modelId)) {
+            bandit.removeArm(category, candidate.modelId);
+          }
+        }
+        for (const modelId of workerModelIds) {
+          bandit.register(category, modelId, costForWorkerModelId(modelId));
         }
       },
     }

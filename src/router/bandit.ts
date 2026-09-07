@@ -202,6 +202,20 @@ export class Router {
     categoryRouter.arms.set(modelId, new Arm(modelId, cost, priorAlpha, priorBeta, decay));
   }
 
+  /**
+   * Deliberately remove a candidate from a category, discarding its learned history entirely --
+   * unlike resetArm() (which keeps the arm but restarts its priors), this makes the arm
+   * unselectable: it won't appear in getCandidates() and route()/select() can no longer draw it.
+   * For a caller that re-derives its candidate set from external config (e.g. cli.ts reconciling
+   * bandit arms against /models' current selection every request), this is what actually makes
+   * disabling a model stop the bandit from being able to pick it -- register()'s "keep history"
+   * idempotency only helps for arms that stay enabled, since it has no occasion to run for one
+   * that's been turned off. A no-op if the category or model isn't registered.
+   */
+  removeArm(category: string, modelId: string): void {
+    this.categories.get(category)?.arms.delete(modelId);
+  }
+
   /** Deliberately discard learned history for this arm and start over from the given priors. */
   resetArm(
     category: string,

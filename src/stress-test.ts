@@ -8,9 +8,11 @@
  */
 import { BudgetGovernor } from "./budget/index.js";
 import { AnthropicClassifierClient, DEFAULT_CLASSIFICATION_RULES, TaskClassifier } from "./classifier/index.js";
-import { getAnthropicApiKey } from "./config/env.js";
+import { getAnthropicApiKey, getOllamaBaseUrl } from "./config/env.js";
 import { ContextCompiler } from "./context/index.js";
 import { AnthropicModelClientFactory } from "./executor/anthropic-model-client-factory.js";
+import { MultiProviderModelClientFactory } from "./executor/multi-provider-model-client-factory.js";
+import { OllamaModelClientFactory } from "./executor/ollama-model-client-factory.js";
 import { AnthropicJudgeClient } from "./reward/anthropic-judge-client.js";
 import { RewardCollector } from "./reward/reward-collector.js";
 import { AnthropicEscalationClient } from "./router/anthropic-escalation-client.js";
@@ -38,9 +40,12 @@ const SYSTEM_PROMPT =
 
 const DEFAULT_TASK = "list the test files in src/reward and summarize what proxy-signals.ts checks for";
 // Real, constructable model ids -- these ARE what gets registered as bandit arms below, so
-// whatever the router picks is what AnthropicModelClientFactory can actually build a client for.
+// whatever the router picks is what modelClientFactory can actually build a client for -- Anthropic
+// or (optionally) an "ollama:"-prefixed local model, see MultiProviderModelClientFactory.
 const FAST_CHEAP_MODEL_ID = "claude-haiku-4-5-20251001";
 const SMART_EXPENSIVE_MODEL_ID = "claude-sonnet-5";
+// See cli.ts for the reasoning behind gating this on an env var rather than always registering it.
+const OLLAMA_MODEL_ID = process.env.OLLAMA_MODEL ? `ollama:${process.env.OLLAMA_MODEL}` : undefined;
 // See cli.ts for the reasoning behind this default -- a single-task run rarely gets close to it.
 const TARGET_TOKENS_PER_MINUTE = 200_000;
 
@@ -66,7 +71,10 @@ async function main() {
     }),
     judgeSampleRate: alwaysJudge ? 1 : undefined,
   });
-  const modelClientFactory = new AnthropicModelClientFactory({ apiKey: getAnthropicApiKey() });
+  const modelClientFactory = new MultiProviderModelClientFactory({
+    anthropic: new AnthropicModelClientFactory({ apiKey: getAnthropicApiKey() }),
+    ollama: OLLAMA_MODEL_ID ? new OllamaModelClientFactory({ baseUrl: getOllamaBaseUrl() }) : undefined,
+  });
   // Same interactive approval gates as demo-real.ts -- this script deliberately throws
   // adversarial tasks at the real tool sandbox, so every mutating tool staying gated here (not
   // just in demo-real.ts) is the point, not an afterthought.
@@ -96,6 +104,12 @@ async function main() {
         if (bandit.getCandidates(category).length === 0) {
           bandit.register(category, FAST_CHEAP_MODEL_ID, 0.01);
           bandit.register(category, SMART_EXPENSIVE_MODEL_ID, 0.3);
+        }
+        // This script's Router is always fresh (no persistence), so this guard split doesn't
+        // change behavior here -- kept identical to cli.ts/demo-real.ts for consistency, since
+        // those do persist state and need it outside the "brand new category" check above.
+        if (OLLAMA_MODEL_ID) {
+          bandit.register(category, OLLAMA_MODEL_ID, 0);
         }
       },
     }

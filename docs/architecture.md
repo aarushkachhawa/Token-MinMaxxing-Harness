@@ -187,10 +187,66 @@ only ever reached `reportOutcome()`'s bookkeeping, so every run was really testi
 model solve it," not whether routing helped. Verified live: a trivial request correctly stayed on
 the cheap tier (the escalation client itself judged the stronger model unnecessary), and a
 genuinely harder one escalated to and executed against the stronger model for real, producing
-visibly more sophisticated output than the cheap tier would. `ModelClientFactory` is still
-Anthropic-only, so the multi-provider half of this section (a real second `provider` in the
-registry, a factory that dispatches across providers, arms actually seeded from `ModelRegistry`)
-remains open.
+visibly more sophisticated output than the cheap tier would.
+
+**Multi-provider dispatch: implemented for Ollama.** `MultiProviderModelClientFactory`
+(`src/executor/multi-provider-model-client-factory.ts`) wraps `AnthropicModelClientFactory` and the
+new `OllamaModelClientFactory` (`src/executor/ollama-model-client.ts`, built on
+`@ai-sdk/openai-compatible` against Ollama's own OpenAI-compatible endpoint rather than a
+dedicated Ollama SDK -- one fewer dependency) and dispatches on a modelId prefix convention: an
+`"ollama:"`-prefixed decision (e.g. `"ollama:llama3.2"`) resolves to a local model, everything else
+still resolves to Anthropic exactly as before. `cli.ts`/`demo-real.ts`/`stress-test.ts` now build
+this factory instead of `AnthropicModelClientFactory` directly. From there it's an ordinary arm:
+nothing routes to it until the bandit's own Thompson sampling decides the evidence favors it for a
+given category, the same self-correcting mechanism that already governs the two Anthropic tiers.
+
+Which local models are actually in play differs by entry point. `demo-real.ts`/`stress-test.ts`
+(non-interactive, single-shot scripts, no `/models` command) still unconditionally register both
+fixed Anthropic tiers, additionally routing to a single local model gated on the `OLLAMA_MODEL` env
+var, since they have no other configuration surface.
+
+`cli.ts` is stricter: `/models`' selection (`model-selection.json`, `src/models-command.ts`) is a
+genuine **allowlist**, not an additive suggestion layered on top of always-available Anthropic
+defaults -- a model has to be explicitly enabled to be a bandit candidate at all, for every
+provider, including Anthropic. `enabledWorkerModelIds()` (`src/config/worker-models.ts`) reads that
+selection fresh on every single subtask (not cached at startup) and returns the bandit-facing id of
+every enabled catalog model with real execution support (Anthropic's bare id, or an
+`"ollama:"`-prefixed local one) -- an enabled OpenAI/Google entry is deliberately excluded here,
+since no `ModelClient` exists for either provider and registering one would just guarantee every
+pull on it fails. `cli.ts`'s `onCategoryDiscovered` reconciles a category's registered arms against
+this set on every call: it registers every currently-enabled id (`register()`'s existing
+idempotency -- refreshes cost, leaves learned `alpha`/`beta` alone -- makes this free once an arm
+already exists) and calls the new `Router.removeArm()` on any previously-registered arm that's no
+longer enabled. That removal is the piece that was missing at first: `register()` alone is purely
+additive, so an arm disabled via `/models` would otherwise keep sitting in the category forever,
+still selectable on whatever history it had already accumulated -- toggling it off would have had
+no actual effect on routing. `removeArm()` discards the arm outright (not a soft disable); a
+later re-enable starts it fresh at its prior rather than resurrecting old history, which is the
+same "deliberately discard, don't try to preserve" philosophy `resetArm()` already uses elsewhere in
+this router for a known model swap. If reconciliation leaves zero enabled worker ids at all,
+`onCategoryDiscovered` throws a clear, actionable error immediately rather than letting `route()`
+fail deeper in the stack with a bare "unknown category" -- a fresh project starts with nothing
+enabled, so this is the expected first-run experience until `/models` turns something on.
+
+This was caught by a real live incident, not by reasoning about it in the abstract: enabling
+`qwen3:8b` via `/models` in this repo's own already-heavily-used `router-state.sqlite` (Claude
+Haiku already had 15+ decayed pulls on `trivial-lookup`) still answered a "which model are you"
+question as Claude every time -- not a bug in dispatch, but Thompson sampling correctly favoring an
+arm with a tight, proven high-success posterior over a brand-new one with a flat prior, which just
+never wins a draw by chance in practice. The fix isn't "help the new arm win more often" (that would
+still let Anthropic answer when the user asked only for a local model); it's that enabling a model
+must make it the *only* thing eligible when it's the only thing enabled. Verified against this
+repo's real persisted state: reconciling with only `qwen3:8b` enabled removed `claude-haiku` (alpha
+18+) and `claude-sonnet-5` from `trivial-lookup` entirely, and 20/20 subsequent `route()` draws
+returned `ollama:qwen3:8b` -- deterministic, not merely likely, because it was the only candidate
+left.
+
+What's still open: arms aren't yet seeded from `ModelRegistry` (see below -- this predates Ollama
+support and applies equally to it), dispatch is a hardcoded two-provider prefix check rather than
+something driven by the registry's `provider` field, `demo-real.ts`/`stress-test.ts` don't share
+`cli.ts`'s allowlist behavior at all (still unconditional-Anthropic-plus-env-var, as above), and
+there's no `ModelClient` for OpenAI/Google yet despite `/models` already listing catalog entries for
+both.
 
 ## Prompt caching
 
@@ -247,10 +303,12 @@ real on Anthropic's invoice but invisible to the harness itself.
 
 ## Open design questions
 
-- **Provider abstraction**: the single-provider version of this is done -- `ModelClientFactory`
-  (see Multi-provider model registry above) turns a router decision into the real Anthropic client
-  that executes it. What's still open is multi-*provider*: build that call layer directly, or sit
-  on top of an existing library (e.g. litellm) and only own the registry/router/bandit logic on top.
+- **Provider abstraction: implemented for Anthropic + Ollama.** `MultiProviderModelClientFactory`
+  (see Multi-provider model registry above) dispatches a router decision to whichever real
+  provider-specific client can execute it, built directly rather than sitting on an existing
+  library (e.g. litellm) -- the surface needed (`generate(options) -> GenerateResult`) was small
+  enough that owning it kept the dependency footprint down. Adding a third provider is the same
+  shape again: a `ModelClient` implementation plus a prefix (or registry-driven) dispatch branch.
 - **Hierarchical priors**: a low-traffic category currently starts from a flat optimistic prior;
   sharing a prior derived from global cross-category stats would reduce cold-start pain without
   exploding arm granularity.
