@@ -1,5 +1,7 @@
 # Token-Maxxing-Harness
 
+[![CI](https://github.com/aarushkachhawa/Token-MinMaxxing-Harness/actions/workflows/ci.yml/badge.svg)](https://github.com/aarushkachhawa/Token-MinMaxxing-Harness/actions/workflows/ci.yml)
+
 Agentic coding harness that min-maxes token spend with a custom model router. See
 [docs/architecture.md](docs/architecture.md) for how the routing/caching/cost pipeline is designed.
 
