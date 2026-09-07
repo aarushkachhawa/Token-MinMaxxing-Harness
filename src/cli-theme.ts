@@ -180,3 +180,15 @@ function wrapWords(paragraph: string, width: number): string[] {
 function renderWords(words: Word[]): string {
   return words.map((w) => (w.bold ? theme.bold(w.text) : w.text)).join(" ");
 }
+
+/**
+ * Clears the terminal so the CLI opens on an empty screen rather than under whatever was already
+ * scrolled up there. Wipes the scrollback buffer too (`\x1b[3J`), not just the visible rows, so
+ * scrolling up after launch doesn't reveal the previous session -- `clear` on its own leaves that
+ * behind on most terminals. Skipped entirely when stdout isn't a TTY, where the escape codes
+ * would just be literal garbage in a captured log.
+ */
+export function clearScreen(): void {
+  if (!process.stdout.isTTY) return;
+  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+}

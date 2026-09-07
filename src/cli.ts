@@ -15,7 +15,7 @@ import { createInterface } from "node:readline/promises";
 import { join } from "node:path";
 import { BudgetGovernor } from "./budget/index.js";
 import { AnthropicClassifierClient, DEFAULT_CLASSIFICATION_RULES, TaskClassifier } from "./classifier/index.js";
-import { drawBanner, formatResponse, theme } from "./cli-theme.js";
+import { clearScreen, drawBanner, formatResponse, theme } from "./cli-theme.js";
 import { getAnthropicApiKey, getOllamaBaseUrl } from "./config/env.js";
 import { costForWorkerModelId, enabledWorkerModelIds } from "./config/worker-models.js";
 import { ContextCompiler, type SubtaskOutput } from "./context/index.js";
@@ -135,11 +135,12 @@ function printBanner(): void {
  * demo-real.ts. Long-lived deps (router store/bandit, classifier, runner, etc.) are shared
  * across calls so router learning accumulates across the whole interactive session.
  *
- * progressUI prints one line per distinct step (plan, subtask headers, rewards, replan checks) as
- * the request moves through them -- see progress-ui.ts. The detail log (triage/exploration/judge
- * chatter, etc.) that used to go through progressUI.log() is currently swallowed there rather
- * than printed; the one thing that always prints is the actual deliverable: each subtask's answer
- * text, once the whole request has finished.
+ * progressUI keeps one status line that rewrites itself in place as the request moves through its
+ * steps (plan, subtask headers, replan checks) -- see progress-ui.ts. The detail log
+ * (triage/exploration/judge chatter, etc.) that used to go through progressUI.log() is currently
+ * swallowed there rather than printed; the one thing that always prints is the actual deliverable:
+ * each subtask's answer text, once the whole request has finished, separated from the status line
+ * above it by a blank line.
  *
  * deps.conversationHistory carries prior turns into Orchestrator.plan() so a follow-up like "now
  * do the same for the other file" resolves against what was actually asked/answered before, and
@@ -151,6 +152,9 @@ async function runRequest(requestDescription: string, deps: PipelineDeps): Promi
     deps;
 
   try {
+    // Blank line between the input frame and the status line, so the request doesn't start
+    // flush against the prompt the user just typed into.
+    console.log();
     progressUI.start("Thinking...");
     if (conversationHistory.length > 0) {
       progressUI.log(`Using ${conversationHistory.length} prior turn(s) of context.`);
@@ -203,7 +207,10 @@ async function runRequest(requestDescription: string, deps: PipelineDeps): Promi
       }
     }
 
+    // stop() commits the status line; the blank line after it separates the progress log from
+    // the deliverable, which otherwise reads as one bunched-up block with the step above it.
     progressUI.stop();
+    console.log();
     const finalText = allOutputs.map((output) => output.finalText).join("\n\n");
     console.log(formatResponse(finalText));
     console.log();
@@ -245,6 +252,9 @@ async function runRequest(requestDescription: string, deps: PipelineDeps): Promi
 }
 
 async function main() {
+  // Open on an empty screen the way a dedicated TUI does, rather than under whatever the shell
+  // had already scrolled up there. No-op when stdout isn't a TTY -- see clearScreen().
+  clearScreen();
   printBanner();
 
   const progressUI = new ProgressUI();
