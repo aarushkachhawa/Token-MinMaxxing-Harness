@@ -18,6 +18,11 @@ const DELETE_KEY = "\x1b[3~";
  * (manually, not via the terminal's own autowrap -- see askLive()'s redraw()), with the bottom
  * divider following it back down.
  *
+ * The frame lives exactly as long as the line being typed: submitting erases it entirely (see
+ * finish()), leaving the caller to echo the submitted text back in whatever transcript form it
+ * likes. So the box only ever appears at the bottom of the screen, around the current input,
+ * instead of one spent box per turn stacking up through the scrollback.
+ *
  * `readline` can't coexist with a pre-drawn frame: it repaints its prompt with "erase from cursor
  * to end of screen" (`\x1b[0J`) on every redraw, wiping anything drawn below the cursor before
  * it's ever visible -- confirmed by capturing the raw byte stream through a pty. This class also
@@ -35,8 +40,9 @@ const DELETE_KEY = "\x1b[3~";
  *
  * Multi-line paste support mirrors what `readline` gave the old implementation "for free": a
  * paste containing embedded newlines resolves the first line immediately and queues the rest,
- * returned by subsequent ask() calls with no new terminal I/O, instead of losing everything after
- * the first line the way naively splitting on just the first newline would.
+ * returned by subsequent ask() calls with no terminal I/O at all (there's no line to edit, and
+ * the caller echoes it like any other), instead of losing everything after the first line the way
+ * naively splitting on just the first newline would.
  */
 export class FramedPrompt {
   private readonly stream: NodeJS.ReadStream;
@@ -49,10 +55,7 @@ export class FramedPrompt {
 
   async ask(label: string): Promise<string> {
     const queued = this.queuedLines.shift();
-    if (queued !== undefined) {
-      this.drawStaticFrame(label, queued);
-      return queued;
-    }
+    if (queued !== undefined) return queued;
     return this.askLive(label);
   }
 
@@ -60,12 +63,6 @@ export class FramedPrompt {
   release(): void {
     if (this.rawModeActive) process.stdout.write("\x1b[?7h"); // restore autowrap if mid-askLive()
     this.disableRawMode();
-  }
-
-  private drawStaticFrame(label: string, text: string): void {
-    process.stdout.write(`${promptDivider()}\r\n`);
-    process.stdout.write(`${label}${text}\r\n`);
-    process.stdout.write(`${promptDivider()}\r\n`);
   }
 
   private askLive(label: string): Promise<string> {
@@ -158,11 +155,19 @@ export class FramedPrompt {
         process.stdout.off("resize", onResize);
         this.disableRawMode();
         process.stdout.write("\x1b[?7h"); // restore autowrap before any normal output follows
-        // Move from wherever the edit cursor was sitting down to just past the (already-drawn,
-        // untouched) bottom divider, ready for whatever prints next.
-        const rowsToMoveDown = inputRowCount + 1 - cursorRowOffset;
-        if (rowsToMoveDown > 0) process.stdout.write(`\x1b[${rowsToMoveDown}B`);
-        process.stdout.write("\r");
+        // Wipe the whole frame -- top divider, every input row, bottom divider -- leaving the
+        // cursor on the row the top divider occupied. The box is a live editing affordance, not a
+        // transcript entry: leaving one behind per turn stacks empty boxes through the scrollback
+        // and buries the actual conversation. The caller echoes the submitted text back in
+        // message form instead (formatUserMessage() in cli-theme.ts), so the frame only ever
+        // exists at the bottom of the screen, around the line currently being typed.
+        //
+        // Moving up past the input rows lands on the top divider (the +1), and erase-to-end-of-
+        // screen takes it and everything below. Safe for the same reason redraw()'s own `\x1b[0J`
+        // is: everything below the cursor here was drawn by this frame, so there's nothing else
+        // to destroy.
+        process.stdout.write(`\x1b[${cursorRowOffset + 1}A`);
+        process.stdout.write("\r\x1b[0J");
         resolve(result);
       };
 

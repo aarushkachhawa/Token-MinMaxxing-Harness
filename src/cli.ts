@@ -15,7 +15,7 @@ import { createInterface } from "node:readline/promises";
 import { join } from "node:path";
 import { BudgetGovernor } from "./budget/index.js";
 import { AnthropicClassifierClient, DEFAULT_CLASSIFICATION_RULES, TaskClassifier } from "./classifier/index.js";
-import { clearScreen, drawBanner, formatResponse, theme } from "./cli-theme.js";
+import { clearScreen, drawBanner, formatResponse, formatUserMessage, theme } from "./cli-theme.js";
 import { getAnthropicApiKey, getOllamaBaseUrl } from "./config/env.js";
 import { costForWorkerModelId, enabledWorkerModelIds } from "./config/worker-models.js";
 import { ContextCompiler, type SubtaskOutput } from "./context/index.js";
@@ -417,6 +417,11 @@ async function main() {
     ).trim();
 
     if (!line) continue;
+    // FramedPrompt erases its own frame on submit, so the line the user just typed only survives
+    // on screen if it's re-rendered here -- as a message matching the answer's shape, which is
+    // the whole point of erasing the box. The readline fallback needs none of this: it isn't
+    // framed, and the terminal's own echo already left the typed line in place.
+    if (framedPrompt) console.log(formatUserMessage(line));
     if (line === "/exit" || line === "/quit") break;
     if (line === "/help") {
       printHelp();

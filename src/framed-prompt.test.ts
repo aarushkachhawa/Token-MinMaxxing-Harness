@@ -34,8 +34,15 @@ function createFakeStream() {
 }
 
 describe("FramedPrompt", () => {
+  /** Everything the prompt painted, in order -- the erase-on-submit tests assert on the tail. */
+  let writes: string[];
+
   beforeEach(() => {
-    vi.spyOn(process.stdout, "write").mockImplementation((() => true) as typeof process.stdout.write);
+    writes = [];
+    vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string) => {
+      writes.push(String(chunk));
+      return true;
+    }) as unknown as typeof process.stdout.write);
   });
 
   afterEach(() => {
@@ -146,6 +153,41 @@ describe("FramedPrompt", () => {
     send("x\r");
     await result;
     expect(setRawModeCalls).toEqual([true, false]);
+  });
+
+  it("erases the whole frame on submit, leaving nothing painted after it", async () => {
+    const { stream, send } = createFakeStream();
+    const prompt = new FramedPrompt(stream);
+    const result = prompt.ask("> ");
+    send("hi\r");
+    await result;
+    // Up one row onto the top divider, then erase to end of screen -- and nothing after, so the
+    // box is gone and the caller's echoed message starts on the row the frame occupied.
+    expect(writes.slice(-2)).toEqual(["\x1b[1A", "\r\x1b[0J"]);
+  });
+
+  it("erases every row of a frame the input had grown to span", async () => {
+    const { stream, send } = createFakeStream();
+    const prompt = new FramedPrompt(stream);
+    const result = prompt.ask("> ");
+    // 100 chars against the 80-column fallback width wraps the input onto a second row, putting
+    // the cursor one row below the first -- the erase has to climb past that row too.
+    send("x".repeat(100));
+    send("\r");
+    await result;
+    expect(writes.slice(-2)).toEqual(["\x1b[2A", "\r\x1b[0J"]);
+  });
+
+  it("a queued paste line paints nothing of its own -- no frame, no leftover box", async () => {
+    const { stream, send } = createFakeStream();
+    const prompt = new FramedPrompt(stream);
+    const first = prompt.ask("> ");
+    send("one\ntwo");
+    await first;
+
+    writes.length = 0;
+    await expect(prompt.ask("> ")).resolves.toBe("two");
+    expect(writes).toEqual([]);
   });
 
   it("release() disables raw mode even mid-prompt", () => {
