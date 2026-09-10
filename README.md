@@ -1,4 +1,4 @@
-# Token-Maxxing-Harness
+# Token-MinMaxxing-Harness
 
 [![CI](https://github.com/aarushkachhawa/Token-Maxxing-Harness/actions/workflows/ci.yml/badge.svg)](https://github.com/aarushkachhawa/Token-Maxxing-Harness/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
