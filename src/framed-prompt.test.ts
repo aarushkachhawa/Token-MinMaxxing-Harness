@@ -37,6 +37,21 @@ describe("FramedPrompt", () => {
   /** Everything the prompt painted, in order -- the erase-on-submit tests assert on the tail. */
   let writes: string[];
 
+  /** Fakes a terminal width; process.stdout has no `columns` under vitest, so it must be defined. */
+  function setColumns(columns: number): void {
+    Object.defineProperty(process.stdout, "columns", { value: columns, configurable: true });
+  }
+
+  /** Waits out the idle frame's trailing-edge repaint. */
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 120));
+
+  afterEach(() => {
+    delete (process.stdout as unknown as { columns?: number }).columns;
+    // Each prompt subscribes to resize for its lifetime; most tests here never release theirs, so
+    // without this they'd pile up on the shared process.stdout and all repaint at once.
+    process.stdout.removeAllListeners("resize");
+  });
+
   beforeEach(() => {
     writes = [];
     vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string) => {
@@ -250,6 +265,113 @@ describe("FramedPrompt", () => {
         expect(writes).toEqual(["\x1b[1A\r\x1b[0J"]);
       });
       expect(writes.at(-1)).toBe("\r\x1b[1A\x1b[2C");
+    });
+
+    it("redraws at the new width on resize, so the dividers still span the window", async () => {
+      const { stream } = createFakeStream();
+      setColumns(80);
+      const prompt = new FramedPrompt("> ", stream);
+      prompt.show();
+      writes.length = 0;
+
+      setColumns(40);
+      process.stdout.emit("resize");
+      await settle();
+
+      // Frame down, frame back up -- the new one drawn against the window as it is now.
+      expect(writes[0]).toBe("\x1b[1A\r\x1b[0J");
+      const rows = writes[1].split("\n");
+      expect(rows[0]).toHaveLength(40);
+      expect(rows[2]).toHaveLength(40);
+      prompt.release();
+    });
+
+    it("repaints once for a drag's worth of resize events, at the size it settles on", async () => {
+      const { stream } = createFakeStream();
+      setColumns(80);
+      const prompt = new FramedPrompt("> ", stream);
+      prompt.show();
+      writes.length = 0;
+
+      for (const width of [78, 70, 61, 55, 44]) {
+        setColumns(width);
+        process.stdout.emit("resize");
+      }
+      await settle();
+
+      // One erase and one redraw, not five of each -- and drawn at 44, the size the drag ended on.
+      expect(writes).toHaveLength(3);
+      expect(writes[1].split("\n")[0]).toHaveLength(44);
+      prompt.release();
+    });
+
+    it("a resize paints nothing while the frame is down", async () => {
+      const { stream } = createFakeStream();
+      const prompt = new FramedPrompt("> ", stream);
+      prompt.show();
+      prompt.hide();
+      writes.length = 0;
+      process.stdout.emit("resize");
+      await settle();
+      expect(writes).toEqual([]);
+      prompt.release();
+    });
+
+    it("a resize mid-edit reflows the line being typed rather than repainting an empty frame", async () => {
+      const { stream, send } = createFakeStream();
+      setColumns(80);
+      const prompt = new FramedPrompt("> ", stream);
+      prompt.show();
+      const result = prompt.ask();
+      send("some typed text");
+      writes.length = 0;
+
+      setColumns(40);
+      process.stdout.emit("resize");
+
+      const painted = writes.join("");
+      expect(painted).toContain("some typed text");
+      expect(painted).toContain("\u2500".repeat(40));
+
+      send("\r");
+      await result;
+      prompt.release();
+    });
+
+    it("release() stops listening, so a later resize paints nothing", async () => {
+      const { stream } = createFakeStream();
+      const prompt = new FramedPrompt("> ", stream);
+      prompt.show();
+      prompt.release();
+      writes.length = 0;
+      process.stdout.emit("resize");
+      await settle();
+      expect(writes).toEqual([]);
+    });
+
+    it("release() cancels a repaint that was still pending", async () => {
+      const { stream } = createFakeStream();
+      const prompt = new FramedPrompt("> ", stream);
+      prompt.show();
+      process.stdout.emit("resize");
+      prompt.release(); // mid-drag shutdown: the queued repaint must not fire onto a dead frame
+      writes.length = 0;
+      await settle();
+      expect(writes).toEqual([]);
+    });
+
+    it("replaceLast() measures the previous line at the current width, not the one it was printed at", () => {
+      const { stream } = createFakeStream();
+      setColumns(100);
+      const prompt = new FramedPrompt("> ", stream);
+      prompt.show();
+      prompt.print("x".repeat(100)); // one row at 100 columns
+
+      setColumns(50); // ...but two rows at 50
+      writes.length = 0;
+      prompt.replaceLast("short");
+      expect(writes[1]).toBe("\x1b[2A");
+      prompt.release();
     });
 
     it("release() takes the frame down so the shell prompt doesn't land on it", () => {

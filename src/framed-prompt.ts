@@ -11,6 +11,13 @@ const ARROW_RIGHT = "\x1b[C";
 const DELETE_KEY = "\x1b[3~";
 
 /**
+ * How long the idle frame waits for a window drag to stop before repainting itself. Long enough
+ * to swallow a drag's stream of intermediate sizes, short enough that letting go of the mouse and
+ * seeing the frame snap to the new width reads as immediate.
+ */
+const RESIZE_SETTLE_MS = 60;
+
+/**
  * Reads one line of input at a time via raw keystrokes instead of Node's `readline` module, so
  * the caller-drawn frame around the prompt (a divider above and below the input row -- see
  * promptDivider() in cli-theme.ts) survives every redraw and is visible before the user types
@@ -65,17 +72,73 @@ export class FramedPrompt {
    * before erasing, which is what lets print() drop its line exactly where the frame was.
    */
   private frameVisible = false;
-  /** Terminal rows the most recently printed line occupies, so replaceLast() knows how far up to go. */
-  private lastLineRows = 0;
+  /**
+   * Text of the entry printed most recently, so replaceLast() can work out how many rows to climb
+   * back over. Stored as text rather than a row count because the count is only valid at one
+   * terminal width: a resize between the print and the replace changes how many rows those same
+   * characters occupy, and recomputing from the text gets the new answer for free.
+   */
+  private lastLine: string | null = null;
+  /** Removes the resize listener; null when none is installed. */
+  private stopResizeListener: (() => void) | null = null;
+  /**
+   * Set while askLive() owns the frame region, so a resize goes to its redraw (which reflows the
+   * text being typed) instead of the idle repaint below.
+   */
+  private liveRedraw: (() => void) | null = null;
+  /** Pending trailing-edge repaint, so one drag repaints once rather than once per event. */
+  private resizeTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(label: string, stream: NodeJS.ReadStream = process.stdin) {
     this.label = label;
     this.stream = stream;
   }
 
+  /**
+   * Repaints whatever currently owns the bottom of the screen at the terminal's new size. The
+   * dividers are full-width, so after a resize they're the one thing guaranteed to be wrong --
+   * too long and they wrap into a second row, too short and they stop short of the edge. Both
+   * read as the frame coming apart, and both are fixed by drawing it again at the new width.
+   *
+   * Only the frame is repainted. Lines already in the transcript belong to the terminal's
+   * scrollback once printed and aren't ours to rewrap; terminals that reflow on resize (most on
+   * macOS, including this project's own front-end) rewrap them themselves.
+   */
+  private handleResize(): void {
+    // The line being typed is repainted immediately: it's what the user is looking at, redraw()
+    // is already a correct full repaint at whatever the width now is, and any lag there reads as
+    // the editor lagging behind the keyboard.
+    if (this.liveRedraw) {
+      this.liveRedraw();
+      return;
+    }
+    // The idle frame waits for the drag to settle instead. Dragging a window emits a resize per
+    // frame of the drag, and each repaint is an erase plus three fresh rows -- doing that dozens
+    // of times mid-drag is pure churn, and every one of them is immediately invalidated by the
+    // next event anyway. Only the size it lands on is worth drawing.
+    if (this.resizeTimer) clearTimeout(this.resizeTimer);
+    this.resizeTimer = setTimeout(() => {
+      this.resizeTimer = null;
+      if (!this.frameVisible) return;
+      this.hide();
+      this.show();
+    }, RESIZE_SETTLE_MS);
+    // Nothing should keep the process alive just because a repaint is pending.
+    this.resizeTimer.unref?.();
+  }
+
+  /** Installs the resize listener once; every path that puts something on screen calls this. */
+  private watchResize(): void {
+    if (this.stopResizeListener) return;
+    const onResize = () => this.handleResize();
+    process.stdout.on("resize", onResize);
+    this.stopResizeListener = () => process.stdout.off("resize", onResize);
+  }
+
   /** Draws the idle frame at the cursor and parks the cursor in its input row. Idempotent. */
   show(): void {
     if (this.frameVisible) return;
+    this.watchResize();
     const divider = promptDivider();
     // No trailing newline after the last divider: the cursor should end up *on* the frame's
     // bottom row, not below it, so moving back up one row lands in the input row. Every move here
@@ -110,7 +173,7 @@ export class FramedPrompt {
     const wasVisible = this.frameVisible;
     this.hide();
     process.stdout.write(`${text}\n`);
-    this.lastLineRows = rowsOccupied(text);
+    this.lastLine = text;
     if (wasVisible) this.show();
   }
 
@@ -123,9 +186,13 @@ export class FramedPrompt {
   replaceLast(text: string): void {
     const wasVisible = this.frameVisible;
     this.hide();
-    if (this.lastLineRows > 0) process.stdout.write(`\x1b[${this.lastLineRows}A`);
+    // Measured now, at the current width, rather than when the line was printed -- if the window
+    // was resized in between, the same characters occupy a different number of rows and a count
+    // cached at the old width would climb to the wrong place.
+    const rows = this.lastLine === null ? 0 : rowsOccupied(this.lastLine);
+    if (rows > 0) process.stdout.write(`\x1b[${rows}A`);
     process.stdout.write(`\r\x1b[0J${text}\n`);
-    this.lastLineRows = rowsOccupied(text);
+    this.lastLine = text;
     if (wasVisible) this.show();
   }
 
@@ -149,6 +216,7 @@ export class FramedPrompt {
     if (queued !== undefined) return queued;
     // The live editor repaints the frame region itself, starting from a clean row.
     this.hide();
+    this.watchResize();
     return this.askLive(this.label);
   }
 
@@ -157,6 +225,11 @@ export class FramedPrompt {
     if (this.rawModeActive) process.stdout.write("\x1b[?7h"); // restore autowrap if mid-askLive()
     this.disableRawMode();
     this.hide();
+    this.liveRedraw = null;
+    if (this.resizeTimer) clearTimeout(this.resizeTimer);
+    this.resizeTimer = null;
+    this.stopResizeListener?.();
+    this.stopResizeListener = null;
   }
 
   private askLive(label: string): Promise<string> {
@@ -240,13 +313,15 @@ export class FramedPrompt {
       // already moves up that many rows, erases everything below, and rewrites the current buffer
       // fresh -- exactly "reformat the existing lines," no different from a normal keystroke
       // redraw except that the width it reads happens to have changed.
-      const onResize = (): void => {
-        redraw();
-      };
+      //
+      // Handing redraw() to the class-level resize listener rather than registering a second one
+      // keeps a single subscriber deciding what a resize means: reflow the line being typed while
+      // this editor is up, repaint the idle frame the rest of the time.
+      this.liveRedraw = redraw;
 
       const finish = (result: string): void => {
         this.stream.off("data", onData);
-        process.stdout.off("resize", onResize);
+        this.liveRedraw = null;
         this.disableRawMode();
         process.stdout.write("\x1b[?7h"); // restore autowrap before any normal output follows
         // Wipe the frame the line was typed into -- top divider, every input row, bottom divider
@@ -274,7 +349,7 @@ export class FramedPrompt {
         while (i < text.length) {
           const ch = text[i];
           if (ch === CTRL_C) {
-            process.stdout.off("resize", onResize);
+            this.liveRedraw = null;
             process.stdout.write("\x1b[?7h");
             process.emit("SIGINT");
             return;
@@ -349,7 +424,6 @@ export class FramedPrompt {
       redraw(); // initial paint: label, blank buffer, and the bottom divider
       this.enableRawMode();
       this.stream.on("data", onData);
-      process.stdout.on("resize", onResize);
     });
   }
 
