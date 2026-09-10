@@ -1,5 +1,9 @@
 # Token-Maxxing-Harness
 
+[![CI](https://github.com/aarushkachhawa/Token-Maxxing-Harness/actions/workflows/ci.yml/badge.svg)](https://github.com/aarushkachhawa/Token-Maxxing-Harness/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](package.json)
+
 Agentic coding harness that min-maxes token spend with a custom model router. See
 [docs/architecture.md](docs/architecture.md) for how the routing/caching/cost pipeline is designed.
 
@@ -7,18 +11,25 @@ Agentic coding harness that min-maxes token spend with a custom model router. Se
 
 ```bash
 npm install
+```
+
+For the interactive CLI (recommended -- see below), that's the whole setup: `/models` is what
+actually decides which models the router is allowed to use -- it's an allowlist, not a suggestion:
+a model you haven't enabled there is never selectable, no matter how it performs. Enabling a model
+that needs an API key (e.g. Anthropic) prompts for it right there and saves it to `.env` for you,
+so there's no separate `cp .env.example .env` step to do by hand. Optionally, route some subtasks
+to a local model instead: install [Ollama](https://ollama.com), then enable one from `/models` (it
+offers to `ollama pull` it for you if needed). `OLLAMA_BASE_URL` (default
+`http://localhost:11434/v1`) only needs setting if Ollama runs somewhere other than localhost.
+
+The non-interactive scripts (`demo:real-pipeline`, `stress`) don't have a `/models` command, so
+they need `ANTHROPIC_API_KEY` set up manually first:
+
+```bash
 cp .env.example .env   # then fill in ANTHROPIC_API_KEY
 ```
 
-For the interactive CLI, `/models` (see below) is what actually decides which models the router is
-allowed to use -- it's an allowlist, not a suggestion: a model you haven't enabled there is never
-selectable, no matter how it performs. Optionally, route some subtasks to a local model instead of
-Anthropic: install [Ollama](https://ollama.com), then enable one from `/models` (it offers to
-`ollama pull` it for you if needed). `OLLAMA_BASE_URL` (default `http://localhost:11434/v1`) only
-needs setting if Ollama runs somewhere other than localhost.
-
-The non-interactive scripts (`demo:real-pipeline`, `stress`) don't have a `/models` command --
-they always register both Anthropic tiers, and additionally route to a local model if you set
+They always register both Anthropic tiers, and additionally route to a local model if you set
 `OLLAMA_MODEL=<model you've pulled>` in `.env`.
 
 ## Usage
@@ -70,3 +81,7 @@ npm run build
 ```
 
 See [docs/benchmarking.md](docs/benchmarking.md) for running the SWE-bench Lite pilot harness.
+
+## License
+
+[MIT](LICENSE) © aarushkachhawa
