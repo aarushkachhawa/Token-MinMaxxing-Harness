@@ -168,7 +168,7 @@ describe("FramedPrompt", () => {
     expect(tail[1]).toBe("\r\x1b[0J");
     expect(tail[2].split("\n")).toHaveLength(3);
     expect(tail[2]).toContain("> ");
-    expect(tail[3]).toBe("\r\x1b[2A");
+    expect(tail[3]).toBe("\r\x1b[1A\x1b[2C");
   });
 
   it("erases every row of a frame the input had grown to span", async () => {
@@ -184,12 +184,12 @@ describe("FramedPrompt", () => {
   });
 
   describe("the pinned frame", () => {
-    it("show() draws three rows and parks the cursor back on the top one", () => {
+    it("show() draws three rows and parks the cursor in the input row", () => {
       const { stream } = createFakeStream();
       new FramedPrompt("> ", stream).show();
       expect(writes).toHaveLength(2);
       expect(writes[0].split("\n")).toHaveLength(3);
-      expect(writes[1]).toBe("\r\x1b[2A");
+      expect(writes[1]).toBe("\r\x1b[1A\x1b[2C");
     });
 
     it("show() is idempotent -- a second call paints nothing", () => {
@@ -209,10 +209,10 @@ describe("FramedPrompt", () => {
       prompt.print("hello");
       // Erase the frame, emit the line on the row it occupied, then the frame one row lower --
       // which is what makes the frame scoot down the screen rather than stay put or vanish.
-      expect(writes[0]).toBe("\x1b[0J");
+      expect(writes[0]).toBe("\x1b[1A\r\x1b[0J");
       expect(writes[1]).toBe("hello\n");
       expect(writes[2].split("\n")).toHaveLength(3);
-      expect(writes[3]).toBe("\r\x1b[2A");
+      expect(writes[3]).toBe("\r\x1b[1A\x1b[2C");
     });
 
     it("print() without a frame up is a plain write", () => {
@@ -228,7 +228,7 @@ describe("FramedPrompt", () => {
       prompt.print("first");
       writes.length = 0;
       prompt.replaceLast("second");
-      expect(writes.slice(0, 3)).toEqual(["\x1b[0J", "\x1b[1A", "\r\x1b[0Jsecond\n"]);
+      expect(writes.slice(0, 3)).toEqual(["\x1b[1A\r\x1b[0J", "\x1b[1A", "\r\x1b[0Jsecond\n"]);
     });
 
     it("replaceLast() climbs over every row a wrapped line took", () => {
@@ -247,9 +247,9 @@ describe("FramedPrompt", () => {
       prompt.show();
       writes.length = 0;
       await prompt.withHidden(async () => {
-        expect(writes).toEqual(["\x1b[0J"]);
+        expect(writes).toEqual(["\x1b[1A\r\x1b[0J"]);
       });
-      expect(writes.at(-1)).toBe("\r\x1b[2A");
+      expect(writes.at(-1)).toBe("\r\x1b[1A\x1b[2C");
     });
 
     it("release() takes the frame down so the shell prompt doesn't land on it", () => {
@@ -258,7 +258,7 @@ describe("FramedPrompt", () => {
       prompt.show();
       writes.length = 0;
       prompt.release();
-      expect(writes).toEqual(["\x1b[0J"]);
+      expect(writes).toEqual(["\x1b[1A\r\x1b[0J"]);
     });
   });
 

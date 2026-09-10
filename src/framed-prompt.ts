@@ -59,10 +59,10 @@ export class FramedPrompt {
   private queuedLines: string[] = [];
   private rawModeActive = false;
   /**
-   * Whether the idle frame is currently on screen. While it is, the cursor is always parked at
-   * column 0 of the frame's top row (the upper divider) -- that parked position is what lets
-   * hide() erase the frame with a single erase-to-end-of-screen and lets print() drop its line
-   * exactly where the frame was.
+   * Whether the idle frame is currently on screen. While it is, the cursor is parked in the input
+   * row, at the column typing would start from -- where the terminal's own blinking cursor
+   * belongs, since that row is where input goes. hide() steps back up to the frame's top row
+   * before erasing, which is what lets print() drop its line exactly where the frame was.
    */
   private frameVisible = false;
   /** Terminal rows the most recently printed line occupies, so replaceLast() knows how far up to go. */
@@ -73,31 +73,40 @@ export class FramedPrompt {
     this.stream = stream;
   }
 
-  /** Draws the idle frame at the cursor and parks the cursor at its top row. Idempotent. */
+  /** Draws the idle frame at the cursor and parks the cursor in its input row. Idempotent. */
   show(): void {
     if (this.frameVisible) return;
     const divider = promptDivider();
     // No trailing newline after the last divider: the cursor should end up *on* the frame's
-    // bottom row, not below it, so moving back up two rows lands on the top row. Every move here
+    // bottom row, not below it, so moving back up one row lands in the input row. Every move here
     // is relative, so drawing the frame at the bottom of the screen (which scrolls) still parks
     // the cursor correctly.
+    //
+    // Parking in the input row rather than on the divider above it is what puts the terminal's
+    // blinking cursor where the user would type. It sat on the divider while a request ran and
+    // only snapped into the box once askLive() took over, which read as the cursor being in the
+    // wrong place for exactly as long as the CLI was busy.
     process.stdout.write(`${divider}\n${this.label}\n${divider}`);
-    process.stdout.write("\r\x1b[2A");
+    const labelWidth = visibleLength(this.label);
+    process.stdout.write(`\r\x1b[1A${labelWidth > 0 ? `\x1b[${labelWidth}C` : ""}`);
     this.frameVisible = true;
   }
 
   /** Erases the frame, leaving the cursor on the row its top divider occupied. Idempotent. */
   hide(): void {
     if (!this.frameVisible) return;
-    process.stdout.write("\x1b[0J");
+    // Up out of the input row onto the top divider first, so erase-to-end-of-screen takes the
+    // whole frame rather than leaving that divider stranded above the next printed line.
+    process.stdout.write("\x1b[1A\r\x1b[0J");
     this.frameVisible = false;
   }
 
   /**
    * Emits one transcript entry above the frame: the frame comes down, the text lands on the row
-   * it occupied, and the frame is redrawn beneath. `text` may span several lines.
+   * it occupied, and the frame is redrawn beneath. `text` may span several lines, and defaults to
+   * empty for a blank spacer row.
    */
-  print(text: string): void {
+  print(text = ""): void {
     const wasVisible = this.frameVisible;
     this.hide();
     process.stdout.write(`${text}\n`);
