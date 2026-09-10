@@ -15,7 +15,7 @@ import { createInterface } from "node:readline/promises";
 import { join } from "node:path";
 import { BudgetGovernor } from "./budget/index.js";
 import { AnthropicClassifierClient, DEFAULT_CLASSIFICATION_RULES, TaskClassifier } from "./classifier/index.js";
-import { drawBanner, formatResponse, theme } from "./cli-theme.js";
+import { clearScreen, drawBanner, formatResponse, formatUserMessage, theme } from "./cli-theme.js";
 import { getAnthropicApiKey, getOllamaBaseUrl } from "./config/env.js";
 import { costForWorkerModelId, enabledWorkerModelIds } from "./config/worker-models.js";
 import { ContextCompiler, type SubtaskOutput } from "./context/index.js";
@@ -103,10 +103,18 @@ interface PipelineDeps {
    */
   lastTriage: { worthRemembering: boolean };
   summarizer: ConversationSummarizerClient;
+  /**
+   * Emits one transcript entry. Everything printed during a request goes through here rather than
+   * console.log, because when the CLI is fully interactive this has to land *above* the pinned
+   * input frame (see FramedPrompt.print) instead of drawing over it.
+   */
+  print: Printer;
 }
 
-function printHelp(): void {
-  console.log(
+type Printer = (text?: string) => void;
+
+function printHelp(print: Printer): void {
+  print(
     [
       theme.bold("Commands:"),
       `  ${theme.neon("/help")}          show this help`,
@@ -135,11 +143,12 @@ function printBanner(): void {
  * demo-real.ts. Long-lived deps (router store/bandit, classifier, runner, etc.) are shared
  * across calls so router learning accumulates across the whole interactive session.
  *
- * progressUI prints one line per distinct step (plan, subtask headers, rewards, replan checks) as
- * the request moves through them -- see progress-ui.ts. The detail log (triage/exploration/judge
- * chatter, etc.) that used to go through progressUI.log() is currently swallowed there rather
- * than printed; the one thing that always prints is the actual deliverable: each subtask's answer
- * text, once the whole request has finished.
+ * progressUI keeps one status line that rewrites itself in place as the request moves through its
+ * steps (plan, subtask headers, replan checks) -- see progress-ui.ts. The detail log
+ * (triage/exploration/judge chatter, etc.) that used to go through progressUI.log() is currently
+ * swallowed there rather than printed; the one thing that always prints is the actual deliverable:
+ * each subtask's answer text, once the whole request has finished, separated from the status line
+ * above it by a blank line.
  *
  * deps.conversationHistory carries prior turns into Orchestrator.plan() so a follow-up like "now
  * do the same for the other file" resolves against what was actually asked/answered before, and
@@ -147,10 +156,13 @@ function printBanner(): void {
  * for where that history actually gets used (triage/explore/structure prompts).
  */
 async function runRequest(requestDescription: string, deps: PipelineDeps): Promise<void> {
-  const { orchestratorClient, routerStore, bandit, runner, progressUI, conversationHistory, lastTriage, summarizer } =
+  const { orchestratorClient, routerStore, bandit, runner, progressUI, conversationHistory, lastTriage, summarizer, print } =
     deps;
 
   try {
+    // Blank line between the echoed request and the status line, so the run doesn't start flush
+    // against the message that kicked it off.
+    print();
     progressUI.start("Thinking...");
     if (conversationHistory.length > 0) {
       progressUI.log(`Using ${conversationHistory.length} prior turn(s) of context.`);
@@ -203,10 +215,13 @@ async function runRequest(requestDescription: string, deps: PipelineDeps): Promi
       }
     }
 
+    // stop() commits the status line; the blank line after it separates the progress log from
+    // the deliverable, which otherwise reads as one bunched-up block with the step above it.
     progressUI.stop();
+    print();
     const finalText = allOutputs.map((output) => output.finalText).join("\n\n");
-    console.log(formatResponse(finalText));
-    console.log();
+    print(formatResponse(finalText));
+    print();
     // Recorded after the request actually finishes -- if runRequest throws above, this turn never
     // gets appended, since there's no coherent "answer" to remember for a failed request. Also
     // skipped when triage judged this a one-off aside (see TriageResult.worthRemembering) -- the
@@ -229,9 +244,9 @@ async function runRequest(requestDescription: string, deps: PipelineDeps): Promi
           turn.summary = await summarizer.summarize(turn);
         }
       } catch (err) {
-        console.error(
-          "Warning: conversation summarization failed, keeping the plain-text fallback:",
-          err instanceof Error ? err.message : err
+        print(
+          theme.warn("Warning: conversation summarization failed, keeping the plain-text fallback: ") +
+            (err instanceof Error ? err.message : String(err))
         );
       } finally {
         progressUI.stop();
@@ -245,9 +260,28 @@ async function runRequest(requestDescription: string, deps: PipelineDeps): Promi
 }
 
 async function main() {
+  // Open on an empty screen the way a dedicated TUI does, rather than under whatever the shell
+  // had already scrolled up there. No-op when stdout isn't a TTY -- see clearScreen().
+  clearScreen();
   printBanner();
 
-  const progressUI = new ProgressUI();
+  // FramedPrompt draws a divider above and below the input row and reads raw keystrokes itself,
+  // rather than going through Node's readline -- see framed-prompt.ts for why the two can't
+  // coexist (readline erases everything below the cursor on every redraw, wiping a pre-drawn
+  // frame before it's ever visible). It needs a real stdin TTY to put into raw mode, so piped/
+  // non-interactive input (no interactive keystrokes to read in the first place) falls back to a
+  // plain readline question with no framing, same as before FramedPrompt existed.
+  const isFullyInteractive = Boolean(process.stdout.isTTY && process.stdin.isTTY);
+  const framedPrompt = isFullyInteractive ? new FramedPrompt(`${theme.neon("❯")} `) : null;
+  // With a frame pinned to the bottom of the screen, a plain console.log would draw straight
+  // through it -- every transcript line goes through the frame instead, which drops the line
+  // where the frame was and redraws the frame one row lower. Without a frame there's nothing to
+  // work around and console.log is exactly right.
+  const print: Printer = framedPrompt
+    ? (text = "") => framedPrompt.print(text)
+    : (text = "") => console.log(text);
+
+  const progressUI = new ProgressUI({ host: framedPrompt ?? undefined });
   // Defaults true so a request that somehow completes without triage ever firing (shouldn't
   // happen in practice) still gets remembered rather than silently dropped.
   const lastTriage: { worthRemembering: boolean } = { worthRemembering: true };
@@ -369,16 +403,9 @@ async function main() {
     conversationHistory,
     lastTriage,
     summarizer,
+    print,
   };
 
-  // FramedPrompt draws a divider above and below the input row and reads raw keystrokes itself,
-  // rather than going through Node's readline -- see framed-prompt.ts for why the two can't
-  // coexist (readline erases everything below the cursor on every redraw, wiping a pre-drawn
-  // frame before it's ever visible). It needs a real stdin TTY to put into raw mode, so piped/
-  // non-interactive input (no interactive keystrokes to read in the first place) falls back to a
-  // plain readline question with no framing, same as before FramedPrompt existed.
-  const isFullyInteractive = Boolean(process.stdout.isTTY && process.stdin.isTTY);
-  const framedPrompt = isFullyInteractive ? new FramedPrompt() : null;
   // One readline interface serves any number of consecutive fallback questions (/help, blank
   // lines, a pasted or piped multi-line batch) -- closing and recreating it on *every* line is
   // what broke this originally: Node delivers a piped/pasted multi-line chunk to the interface in
@@ -396,30 +423,42 @@ async function main() {
     routerStore.close();
   };
   process.on("SIGINT", () => {
-    console.log("\nExiting.");
+    // cleanup() takes the frame down first, so "Exiting." isn't printed over the top of it.
     cleanup();
+    console.log("\nExiting.");
     process.exit(0);
   });
 
+  // The frame goes up before the first prompt and stays up from here on -- ask() borrows the
+  // region to edit in and hands an empty frame straight back, and every print() above keeps it
+  // pinned below the transcript.
+  framedPrompt?.show();
+
   for (;;) {
-    const line = (
-      framedPrompt ? await framedPrompt.ask(`${theme.neon("❯")} `) : await fallbackRl!.question("> ")
-    ).trim();
+    const line = (framedPrompt ? await framedPrompt.ask() : await fallbackRl!.question("> ")).trim();
 
     if (!line) continue;
+    // The typed line only survives on screen if it's re-rendered as a transcript message: the
+    // frame that held it was reset to empty on submit. The readline fallback needs none of this
+    // -- it isn't framed, and the terminal's own echo already left the typed line in place.
+    if (framedPrompt) print(formatUserMessage(line));
     if (line === "/exit" || line === "/quit") break;
     if (line === "/help") {
-      printHelp();
+      printHelp(print);
       continue;
     }
     if (line === "/reset") {
       conversationHistory.length = 0;
-      console.log(theme.success("Conversation history cleared.\n"));
+      print(theme.success("Conversation history cleared."));
+      print();
       continue;
     }
     if (line === "/models") {
       fallbackRl?.close();
-      await runModelsCommand({ selectionPath: MODEL_SELECTION_PATH, dotEnvPath: DOT_ENV_PATH });
+      // runModelsCommand paints its own full-width menu and reads stdin itself, so the frame has
+      // to come down for the duration rather than sit underneath being drawn through.
+      const runModels = () => runModelsCommand({ selectionPath: MODEL_SELECTION_PATH, dotEnvPath: DOT_ENV_PATH });
+      await (framedPrompt ? framedPrompt.withHidden(runModels) : runModels());
       if (!framedPrompt) fallbackRl = createInterface({ input: process.stdin, output: process.stdout });
       continue;
     }
@@ -428,7 +467,8 @@ async function main() {
     try {
       await runRequest(line, deps);
     } catch (err) {
-      console.error(theme.error("Error:"), err instanceof Error ? err.message : err);
+      print(theme.error("Error: ") + (err instanceof Error ? err.message : String(err)));
+      print();
     }
     if (!framedPrompt) fallbackRl = createInterface({ input: process.stdin, output: process.stdout });
   }

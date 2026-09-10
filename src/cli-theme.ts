@@ -110,22 +110,45 @@ const RESPONSE_MAX_WIDTH = 92;
 const RESPONSE_INDENT = "  ";
 
 /**
- * Formats a finished request's answer for display: a neon star sits right next to the first line
- * of the response (so it's visually distinguishable from the step log above it without a
- * separate header line), the text is word-wrapped to a comfortable reading column (not the full
- * terminal width, which looks cluttered and hurts readability on a wide terminal), and any
- * `**markdown bold**` the model wrote renders as real terminal bold instead of showing the
- * literal asterisks. Every line after the first -- both wrapped continuations and separate
- * paragraphs -- gets a hanging indent matching the star's visible width, so the whole block reads
- * as aligned under the star rather than the star looking like a bullet on an otherwise flush-left
- * paragraph. Purely a display transform -- callers should keep using the original unwrapped text
- * for anything besides printing (conversation history, summarization).
+ * Shared layout for one message in the transcript, whoever sent it: a marker sits right next to
+ * the first line (so the message is visually distinguishable from the status line above it
+ * without a separate header row), the text is word-wrapped to a comfortable reading column (not
+ * the full terminal width, which looks cluttered and hurts readability on a wide terminal), and
+ * every line after the first -- both wrapped continuations and separate paragraphs -- gets a
+ * hanging indent matching the marker's visible width, so the whole block reads as aligned under
+ * the marker rather than the marker looking like a bullet on an otherwise flush-left paragraph.
+ * Purely a display transform -- callers should keep using the original unwrapped text for
+ * anything besides printing (conversation history, summarization).
+ */
+function formatMarkedBlock(
+  text: string,
+  marker: string,
+  options: { renderBold: boolean; paint: (line: string) => string }
+): string {
+  const width = Math.max(Math.min((process.stdout.columns || 80) - RESPONSE_INDENT.length, RESPONSE_MAX_WIDTH), 20);
+  const lines = text.split("\n").flatMap((paragraph) => wrapWords(paragraph, width, options.renderBold));
+  return lines.map((line, i) => `${i === 0 ? marker : RESPONSE_INDENT}${options.paint(line)}`).join("\n");
+}
+
+/**
+ * Formats a finished request's answer: a neon star marker, and any `**markdown bold**` the model
+ * wrote rendered as real terminal bold instead of showing the literal asterisks.
  */
 export function formatResponse(text: string): string {
-  const marker = `${theme.neon("✦")} `;
-  const width = Math.max(Math.min((process.stdout.columns || 80) - RESPONSE_INDENT.length, RESPONSE_MAX_WIDTH), 20);
-  const lines = text.split("\n").flatMap((paragraph) => wrapWords(paragraph, width));
-  return lines.map((line, i) => `${i === 0 ? marker : RESPONSE_INDENT}${line}`).join("\n");
+  return formatMarkedBlock(text, `${theme.neon("✦")} `, { renderBold: true, paint: (line) => line });
+}
+
+/**
+ * Formats a request the user just typed, for echoing into the transcript once its input frame has
+ * been erased (see FramedPrompt) -- so a scrolled-back conversation reads as alternating messages
+ * rather than a stack of leftover input boxes. Deliberately the same shape as formatResponse()
+ * with two differences: a violet `❯` rather than a neon `✦`, and dimmed text, so past turns
+ * recede behind the answer they produced instead of competing with it. Bold markup is *not*
+ * interpreted here -- this is the user's literal text, so a typed `**` should stay on screen as
+ * the two characters they actually typed.
+ */
+export function formatUserMessage(text: string): string {
+  return formatMarkedBlock(text, `${theme.violet("❯")} `, { renderBold: false, paint: theme.dim });
 }
 
 interface Word {
@@ -137,13 +160,18 @@ interface Word {
  * Splits a paragraph into words, tagging each with whether it fell inside a `**...**` span --
  * per-word rather than per-line, so a bold span that happens to straddle a wrap boundary (a
  * multi-word `**like this one**`) still renders correctly on both resulting lines instead of
- * leaving an unpaired `**` marker on one of them.
+ * leaving an unpaired `**` marker on one of them. With `renderBold` false the markup isn't
+ * recognized at all and every `**` stays in the text verbatim.
  */
-function tokenizeBold(paragraph: string): Word[] {
+function tokenizeBold(paragraph: string, renderBold: boolean): Word[] {
   const words: Word[] = [];
   const pushPlain = (segment: string, bold: boolean) => {
     for (const w of segment.split(" ")) if (w.length > 0) words.push({ text: w, bold });
   };
+  if (!renderBold) {
+    pushPlain(paragraph, false);
+    return words;
+  }
   const boldSpan = /\*\*(.+?)\*\*/g;
   let lastIndex = 0;
   for (const match of paragraph.matchAll(boldSpan)) {
@@ -155,8 +183,8 @@ function tokenizeBold(paragraph: string): Word[] {
   return words;
 }
 
-function wrapWords(paragraph: string, width: number): string[] {
-  const words = tokenizeBold(paragraph);
+function wrapWords(paragraph: string, width: number, renderBold: boolean): string[] {
+  const words = tokenizeBold(paragraph, renderBold);
   if (words.length === 0) return [""];
 
   const lines: string[] = [];
@@ -179,4 +207,16 @@ function wrapWords(paragraph: string, width: number): string[] {
 
 function renderWords(words: Word[]): string {
   return words.map((w) => (w.bold ? theme.bold(w.text) : w.text)).join(" ");
+}
+
+/**
+ * Clears the terminal so the CLI opens on an empty screen rather than under whatever was already
+ * scrolled up there. Wipes the scrollback buffer too (`\x1b[3J`), not just the visible rows, so
+ * scrolling up after launch doesn't reveal the previous session -- `clear` on its own leaves that
+ * behind on most terminals. Skipped entirely when stdout isn't a TTY, where the escape codes
+ * would just be literal garbage in a captured log.
+ */
+export function clearScreen(): void {
+  if (!process.stdout.isTTY) return;
+  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
 }
