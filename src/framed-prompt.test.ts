@@ -278,8 +278,9 @@ describe("FramedPrompt", () => {
       process.stdout.emit("resize");
       await settle();
 
-      // Frame down, frame back up -- the new one drawn against the window as it is now.
-      expect(writes[0]).toBe("\x1b[1A\r\x1b[0J");
+      // Frame down, frame back up -- the new one drawn against the window as it is now. Two rows
+      // up, not one: at half the width the old top divider has re-wrapped into two.
+      expect(writes[0]).toBe("\x1b[2A\r\x1b[0J");
       const rows = writes[1].split("\n");
       expect(rows[0]).toHaveLength(40);
       expect(rows[2]).toHaveLength(40);
@@ -302,6 +303,56 @@ describe("FramedPrompt", () => {
       // One erase and one redraw, not five of each -- and drawn at 44, the size the drag ended on.
       expect(writes).toHaveLength(3);
       expect(writes[1].split("\n")[0]).toHaveLength(44);
+      prompt.release();
+    });
+
+    it("climbs over every row a narrowed divider re-wrapped into, leaving no half behind", async () => {
+      // 100 columns of divider shown in a 45-column window is three rows, so erasing from one row
+      // up spared the first two -- and every further resize stacked another leftover divider.
+      const { stream } = createFakeStream();
+      setColumns(100);
+      const prompt = new FramedPrompt("> ", stream);
+      prompt.show();
+      writes.length = 0;
+
+      setColumns(45);
+      process.stdout.emit("resize");
+      await settle();
+
+      expect(writes[0]).toBe("\x1b[3A\r\x1b[0J");
+      prompt.release();
+    });
+
+    it("climbs a single row when the window grew, since nothing re-wrapped", async () => {
+      const { stream } = createFakeStream();
+      setColumns(40);
+      const prompt = new FramedPrompt("> ", stream);
+      prompt.show();
+      writes.length = 0;
+
+      setColumns(90);
+      process.stdout.emit("resize");
+      await settle();
+
+      expect(writes[0]).toBe("\x1b[1A\r\x1b[0J");
+      prompt.release();
+    });
+
+    it("scales the mid-edit climb by the same factor", async () => {
+      const { stream, send } = createFakeStream();
+      setColumns(80);
+      const prompt = new FramedPrompt("> ", stream);
+      const result = prompt.ask();
+      send("typed");
+      writes.length = 0;
+
+      setColumns(40);
+      process.stdout.emit("resize");
+
+      expect(writes[0]).toBe("\x1b[2A");
+
+      send("\r");
+      await result;
       prompt.release();
     });
 

@@ -88,6 +88,8 @@ export class FramedPrompt {
   private liveRedraw: (() => void) | null = null;
   /** Pending trailing-edge repaint, so one drag repaints once rather than once per event. */
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Terminal width the frame was last painted at; the reflow math below is relative to it. */
+  private drawnWidth = 0;
 
   constructor(label: string, stream: NodeJS.ReadStream = process.stdin) {
     this.label = label;
@@ -127,6 +129,26 @@ export class FramedPrompt {
     this.resizeTimer.unref?.();
   }
 
+  /**
+   * How many rows one of the frame's full-width rows occupies *now*. Normally 1, but when the
+   * window has been narrowed since the frame was painted, a terminal that reflows has re-wrapped
+   * each of those rows into this many -- so the frame is taller on screen than the three rows it
+   * was drawn as, and anything that walks up through it has to count in these units.
+   *
+   * Getting this wrong is what left a doubled divider behind on every narrowing: moving up a
+   * single row from the input landed halfway through the re-wrapped top divider, so erasing from
+   * there spared its first row, and each further resize stacked another one.
+   *
+   * This assumes the terminal reflows on resize, which every terminal this runs in does (macOS
+   * Terminal, iTerm2, and the xterm.js front-ends). On one that doesn't, a narrowing erases a row
+   * or two of transcript above the frame instead -- the opposite error, and the one that doesn't
+   * accumulate.
+   */
+  private reflowFactor(): number {
+    const width = process.stdout.columns || 80;
+    return this.drawnWidth > width ? Math.ceil(this.drawnWidth / width) : 1;
+  }
+
   /** Installs the resize listener once; every path that puts something on screen calls this. */
   private watchResize(): void {
     if (this.stopResizeListener) return;
@@ -139,6 +161,7 @@ export class FramedPrompt {
   show(): void {
     if (this.frameVisible) return;
     this.watchResize();
+    this.drawnWidth = process.stdout.columns || 80;
     const divider = promptDivider();
     // No trailing newline after the last divider: the cursor should end up *on* the frame's
     // bottom row, not below it, so moving back up one row lands in the input row. Every move here
@@ -159,8 +182,9 @@ export class FramedPrompt {
   hide(): void {
     if (!this.frameVisible) return;
     // Up out of the input row onto the top divider first, so erase-to-end-of-screen takes the
-    // whole frame rather than leaving that divider stranded above the next printed line.
-    process.stdout.write("\x1b[1A\r\x1b[0J");
+    // whole frame rather than leaving that divider stranded above the next printed line -- in
+    // however many rows that divider currently occupies, see reflowFactor().
+    process.stdout.write(`\x1b[${this.reflowFactor()}A\r\x1b[0J`);
     this.frameVisible = false;
   }
 
@@ -288,9 +312,12 @@ export class FramedPrompt {
         }
         inputRowCount = rows.length;
 
-        // Up past the input rows and the top divider above them (the +1).
-        if (painted) process.stdout.write(`\x1b[${cursorRowOffset + 1}A`);
+        // Up past the input rows and the top divider above them (the +1). Every row above the
+        // cursor is a full one -- the divider spans the window, and an input row only exists
+        // above the cursor because it filled -- so all of them re-wrap by the same factor.
+        if (painted) process.stdout.write(`\x1b[${(cursorRowOffset + 1) * this.reflowFactor()}A`);
         painted = true;
+        this.drawnWidth = width;
         const divider = promptDivider();
         process.stdout.write("\r\x1b[0J");
         process.stdout.write(`${divider}\r\n`);
@@ -352,7 +379,7 @@ export class FramedPrompt {
         // screen takes it and everything below. Safe for the same reason redraw()'s own `\x1b[0J`
         // is: everything below the cursor here was drawn by this frame, so there's nothing else
         // to destroy.
-        process.stdout.write(`\x1b[${cursorRowOffset + 1}A`);
+        process.stdout.write(`\x1b[${(cursorRowOffset + 1) * this.reflowFactor()}A`);
         process.stdout.write("\r\x1b[0J");
         this.frameVisible = false;
         this.show();
