@@ -60,11 +60,15 @@ async function main() {
     const startedAt = Date.now();
     let inputTokens = 0;
     let outputTokens = 0;
+    let cacheCreationInputTokens = 0;
+    let cacheReadInputTokens = 0;
     try {
       await runInstanceScript(repoDir, requestFile, resultJson);
       const summary = JSON.parse(await readFile(resultJson, "utf-8"));
       inputTokens = summary.inputTokens ?? 0;
       outputTokens = summary.outputTokens ?? 0;
+      cacheCreationInputTokens = summary.cacheCreationInputTokens ?? 0;
+      cacheReadInputTokens = summary.cacheReadInputTokens ?? 0;
     } catch (error) {
       console.error(`Run failed for ${instance.instanceId}:`, error);
     }
@@ -81,6 +85,8 @@ async function main() {
       wallClockMs,
       inputTokens,
       outputTokens,
+      cacheCreationInputTokens,
+      cacheReadInputTokens,
       costUsd: null, // tmh doesn't get a directly-billed total the way Claude Code's result.json does
       patchIsEmpty: patch.trim().length === 0,
     };

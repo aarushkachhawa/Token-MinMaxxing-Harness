@@ -13,6 +13,11 @@ export interface InstanceRunLog {
   wallClockMs: number;
   inputTokens: number;
   outputTokens: number;
+  /** Prompt-cache write tokens (billed higher than fresh input) -- kept separate from
+   * inputTokens/outputTokens since collapsing them loses the rate distinction entirely. */
+  cacheCreationInputTokens: number;
+  /** Prompt-cache read tokens (billed far lower than fresh input). */
+  cacheReadInputTokens: number;
   costUsd: number | null;
   patchIsEmpty: boolean;
 }
