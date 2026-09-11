@@ -282,8 +282,9 @@ describe("FramedPrompt", () => {
       // up, not one: at half the width the old top divider has re-wrapped into two.
       expect(writes[0]).toBe("\x1b[2A\r\x1b[0J");
       const rows = writes[1].split("\n");
-      expect(rows[0]).toHaveLength(40);
-      expect(rows[2]).toHaveLength(40);
+      // One short of the window: the frame never writes a row's last column (see dividerWidth).
+      expect(rows[0]).toHaveLength(39);
+      expect(rows[2]).toHaveLength(39);
       prompt.release();
     });
 
@@ -302,7 +303,7 @@ describe("FramedPrompt", () => {
 
       // One erase and one redraw, not five of each -- and drawn at 44, the size the drag ended on.
       expect(writes).toHaveLength(3);
-      expect(writes[1].split("\n")[0]).toHaveLength(44);
+      expect(writes[1].split("\n")[0]).toHaveLength(43);
       prompt.release();
     });
 
@@ -356,6 +357,28 @@ describe("FramedPrompt", () => {
       prompt.release();
     });
 
+    it("never writes a row out to the last column, whatever is typed", async () => {
+      // The rule the whole frame geometry rests on. Terminals disagree about the cursor after a
+      // row's last column is written -- most hold it there, some advance to the next row -- so a
+      // frame that fills a row is a frame whose height depends on the terminal. On the ones that
+      // advance, that stranded the cursor a row below where the code thought it was, and every
+      // repaint erased from one row too low and left its old top divider behind.
+      const { stream, send } = createFakeStream();
+      setColumns(40);
+      const prompt = new FramedPrompt("> ", stream);
+      const result = prompt.ask();
+      send("x".repeat(120)); // several rows' worth, so wrapped rows are exercised too
+
+      const painted = writes.join("").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+      for (const line of painted.split(/\r\n|\n|\r/)) {
+        expect(line.length).toBeLessThan(40);
+      }
+
+      send("\r");
+      await result;
+      prompt.release();
+    });
+
     it("a resize paints nothing while the frame is down", async () => {
       const { stream } = createFakeStream();
       const prompt = new FramedPrompt("> ", stream);
@@ -382,7 +405,7 @@ describe("FramedPrompt", () => {
 
       const painted = writes.join("");
       expect(painted).toContain("some typed text");
-      expect(painted).toContain("\u2500".repeat(40));
+      expect(painted).toContain("\u2500".repeat(39));
 
       send("\r");
       await result;
@@ -403,10 +426,10 @@ describe("FramedPrompt", () => {
 
       // The top divider used to be painted once when the prompt opened and never again, so a
       // widened window left it stopping short while the bottom one spanned the new width.
-      const narrow = "\u2500".repeat(40);
+      const narrow = "\u2500".repeat(39);
       const occurrences = writes.join("").split(narrow).length - 1;
       expect(occurrences).toBe(2);
-      expect(writes.join("")).not.toContain("\u2500".repeat(41));
+      expect(writes.join("")).not.toContain("\u2500".repeat(40));
 
       send("\r");
       await result;
@@ -424,7 +447,7 @@ describe("FramedPrompt", () => {
       // The repaint used to end with a newline after the bottom divider, which at the bottom of
       // the screen scrolled the terminal up a row -- the prompt appearing to print a blank line
       // on its own. The cursor must leave that row by moving up, never by advancing past it.
-      const divider = "\u2500".repeat(40);
+      const divider = "\u2500".repeat(39);
       const lastDivider = writes.lastIndexOf(divider);
       expect(lastDivider).toBeGreaterThan(-1);
       expect(writes[lastDivider + 1]).toBe("\x1b[1A");

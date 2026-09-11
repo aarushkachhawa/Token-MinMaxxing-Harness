@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatResponse, formatUserMessage, truncateVisible, visibleLength } from "./cli-theme.js";
+import { dividerWidth, formatResponse, formatUserMessage, truncateVisible, visibleLength } from "./cli-theme.js";
 
 /**
  * Color is off in these tests (stdout isn't a TTY under vitest, see cli-theme's colorEnabled), so
@@ -40,6 +40,18 @@ describe("formatUserMessage", () => {
     const out = formatUserMessage("first line\nsecond line");
     expect(out).toContain("first line");
     expect(out).toContain("second line");
+  });
+});
+
+describe("dividerWidth", () => {
+  it("stops one column short of the terminal so a divider can never wrap", () => {
+    Object.defineProperty(process.stdout, "columns", { value: 50, configurable: true });
+    expect(dividerWidth()).toBe(49);
+    delete (process.stdout as unknown as { columns?: number }).columns;
+  });
+
+  it("falls back to a sane width when the terminal hasn't reported one", () => {
+    expect(dividerWidth()).toBe(79);
   });
 });
 

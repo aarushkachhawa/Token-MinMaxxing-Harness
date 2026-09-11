@@ -1,4 +1,4 @@
-import { promptDivider, visibleLength } from "./cli-theme.js";
+import { dividerWidth, promptDivider, visibleLength } from "./cli-theme.js";
 
 const CTRL_C = "\x03";
 const CTRL_A = "\x01";
@@ -88,7 +88,11 @@ export class FramedPrompt {
   private liveRedraw: (() => void) | null = null;
   /** Pending trailing-edge repaint, so one drag repaints once rather than once per event. */
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Terminal width the frame was last painted at; the reflow math below is relative to it. */
+  /**
+   * Character count of the divider the frame was last painted with -- the reflow math below is
+   * relative to it. The divider's own length, not the terminal width, since it deliberately stops
+   * a column short (see dividerWidth) and re-wrapping depends on how long the line actually is.
+   */
   private drawnWidth = 0;
 
   constructor(label: string, stream: NodeJS.ReadStream = process.stdin) {
@@ -161,7 +165,7 @@ export class FramedPrompt {
   show(): void {
     if (this.frameVisible) return;
     this.watchResize();
-    this.drawnWidth = process.stdout.columns || 80;
+    this.drawnWidth = dividerWidth();
     const divider = promptDivider();
     // No trailing newline after the last divider: the cursor should end up *on* the frame's
     // bottom row, not below it, so moving back up one row lands in the input row. Every move here
@@ -295,7 +299,10 @@ export class FramedPrompt {
         // label's *visible* width instead, or both the wrap point and the cursor position drift
         // off by however many bytes the color codes add.
         const labelWidth = visibleLength(label);
-        const availableWidth = Math.max(1, width - labelWidth);
+        // Minus one more so a filled input row stops a column short of the edge, for the same
+        // reason the dividers do -- a row written all the way to the last column advances the
+        // cursor on some terminals, which would throw off every row count taken from here.
+        const availableWidth = Math.max(1, width - labelWidth - 1);
         const indent = " ".repeat(labelWidth);
 
         // Continuation rows are indented to the same column the first row's text starts at
@@ -317,8 +324,8 @@ export class FramedPrompt {
         // above the cursor because it filled -- so all of them re-wrap by the same factor.
         if (painted) process.stdout.write(`\x1b[${(cursorRowOffset + 1) * this.reflowFactor()}A`);
         painted = true;
-        this.drawnWidth = width;
         const divider = promptDivider();
+        this.drawnWidth = visibleLength(divider);
         process.stdout.write("\r\x1b[0J");
         process.stdout.write(`${divider}\r\n`);
         process.stdout.write(rows.join("\r\n"));

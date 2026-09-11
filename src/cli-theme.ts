@@ -88,10 +88,22 @@ export function gradient(text: string): string {
  * around the typed text itself would need full terminal-cell control (an Ink-style TUI), and side
  * borders around a single unbounded input line added visual noise without adding structure.
  */
+export function dividerWidth(): number {
+  // `||` only falls back on null/undefined/0, not a real width -- a terminal that hasn't reported
+  // a size yet can legitimately read `columns: 0`, which `.repeat(0)` would silently turn into an
+  // empty line.
+  //
+  // One column short of the terminal, never the full width. Writing the last column of a row
+  // leaves the cursor in a state terminals disagree about: most hold it there until another
+  // character arrives, but some advance to the next row immediately. On those, a full-width
+  // divider silently cost an extra row, which stranded the cursor a row below where the frame
+  // thought it was and left a divider behind on every repaint. Stopping one short means no line
+  // the frame draws can ever trigger a wrap, so the geometry is the same on both kinds.
+  return Math.max(1, (process.stdout.columns || 80) - 1);
+}
+
 export function promptDivider(): string {
-  // `??` only falls back on null/undefined, not 0 -- a terminal that hasn't reported a size yet
-  // can legitimately read `columns: 0`, which `.repeat(0)` would silently turn into an empty line.
-  return theme.neon("─".repeat(process.stdout.columns || 80));
+  return theme.neon("─".repeat(dividerWidth()));
 }
 
 /**
