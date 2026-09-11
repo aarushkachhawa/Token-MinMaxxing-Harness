@@ -65,6 +65,8 @@ async function main() {
       wallClockMs: result.duration_ms ?? 0,
       inputTokens,
       outputTokens: usage.output_tokens ?? 0,
+      cacheCreationInputTokens: usage.cache_creation_input_tokens ?? 0,
+      cacheReadInputTokens: usage.cache_read_input_tokens ?? 0,
       costUsd: result.total_cost_usd ?? null,
       patchIsEmpty: patch.trim().length === 0,
     };

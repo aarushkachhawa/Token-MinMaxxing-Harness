@@ -195,7 +195,7 @@ each call, since none of those clients currently expose per-call usage through t
 `report.ts` falls back to a blended-rate estimate (Haiku 4.5 pricing, since the executor's tool-loop
 tokens dominate call volume) for tmh's cost column, labeled `(estimated)`.
 
-### First real data point
+### First real data point (stale — predates the router-wiring fix)
 
 Ran end-to-end on `astropy__astropy-12907` (nested-CompoundModel separability bug in
 `astropy/modeling/separable.py`) before building the loop infrastructure, to validate the
@@ -209,38 +209,83 @@ mechanics with one real, graded result rather than trusting an estimate:
 | Wall-clock | 62.4s | 233.0s |
 
 tmh's orchestrator (Sonnet 5) correctly diagnosed the bug location during planning, but the single
-subtask handed to the executor — which runs on Haiku 4.5 regardless of what the router "decided,"
-per the open design question below — produced a standalone repro script and never touched the
-actual fix, even after the failure-triggered escalation retry (which is subject to the same
-limitation: it's still Haiku, since there's no real per-decision model dispatch yet). Claude Code
-found and fixed the actual one-line bug (`cright[...] = 1` should be `cright[...] = right`) and
-verified it against the existing test suite itself.
+subtask handed to the executor produced a standalone repro script and never touched the actual
+fix, even after the failure-triggered escalation retry. Claude Code found and fixed the actual
+one-line bug (`cright[...] = 1` should be `cright[...] = right`) and verified it against the
+existing test suite itself.
 
-One instance is nowhere near enough to generalize from, but it's a concrete illustration of the
-"provider abstraction" gap below being load-bearing, not theoretical.
+**This result is now known to be an artifact of a bug, not a capability gap, and shouldn't be
+cited on its own.** The run above predates [PR #13](https://github.com/aarushkachhawa/Token-Maxxing-Harness/pull/13)
+("Wire the router's model choice to actual execution"), which was written specifically in response
+to this instance: at the time, `SubtaskRunner.attempt()` always built its `Executor` from a single
+fixed `ModelClient`, so every subtask — and every escalation retry meant to hand a failed attempt
+to a stronger model — silently ran on Haiku 4.5 regardless of what the router decided. PR #13
+merged four days *before* this doc was first written, but the doc's "open design questions" still
+described the gap as unfixed — an inconsistency caught during a later review rather than at the
+time. See the second data point below, which re-runs this exact instance after the fix.
+
+### Second data point: re-run after the router-wiring fix
+
+Re-ran the identical `astropy__astropy-12907` instance (same checkout, same problem statement)
+through `run-instance.ts` after PRs #13–#15 (router wiring, `run_command`/`edit_file` tools, prompt
+caching) had all landed, to check whether the fix actually closed the gap the first data point
+exposed. No Docker/official grading involved — this is a diff inspection, not a graded result.
+
+tmh's diff after this run:
+
+```diff
+-cright[-right.shape[0]:, -right.shape[1]:] = 1
++cright[-right.shape[0]:, -right.shape[1]:] = right
+```
+
+This is the exact upstream fix — the same one-line change Claude Code found in the first data
+point, and SWE-bench Lite's own gold patch for this instance. Under the official grader this would
+very likely resolve. So on this one instance, the router-wiring fix did close the gap: **the stale
+"open design question" below about the router not reaching execution is no longer accurate** and
+has been removed from that section.
+
+Two things surfaced by this re-run are still open, though:
+
+- **tmh's own success signal disagreed with the actual outcome.** `finalText` came back empty and
+  the judged reward was only `0.33` — the executor hit its 15-turn cap while still
+  exploring/verifying rather than ever emitting an explicit final answer, even though the edit it
+  had already made was correct. A pilot run that trusted tmh's self-reported reward instead of the
+  official SWE-bench grader would have called this a failure. This is exactly the caution
+  [architecture.md](architecture.md#reward-signal) already gives about the reward tier not being a
+  correctness oracle, now observed concretely instead of hypothetically.
+- **The run was slower and pricier than the stale baseline, and than Claude Code.** 340.2s
+  wall-clock (vs. 233.0s for Claude Code, vs. 62.4s for tmh's own pre-fix run) across 45 API calls,
+  with heavy prompt-cache traffic (13,637 fresh-input / 68,605 cache-write / 461,247 cache-read /
+  10,033 output tokens) — real multi-turn tool use costs real round-trips. One of those turns was a
+  wasted `find /`-style whole-filesystem search that only stopped because `run_command`'s 120s
+  per-call timeout killed it; that kind of wasted turn is worth watching for across a larger
+  sample, not just noting once. `report.ts`'s cost-estimate formula previously ignored cache tokens
+  entirely, which would have undercounted a run like this by several times — fixed alongside this
+  doc update (see `TMH_CACHE_WRITE_RATE_PER_M`/`TMH_CACHE_READ_RATE_PER_M` in `report.ts`).
+
+One instance — twice — is still nowhere near enough to generalize from, but it's a concrete
+existence proof that the fix works on at least one case, and a concrete illustration that the
+reward-signal gap below is load-bearing, not theoretical.
 
 ## Open design questions
 
 - **Grading environment**: the official SWE-bench harness runs grading in Docker per instance
   (matching each repo's actual test environment). This needs to exist regardless of which agent
-  is being scored, so it's a one-time setup cost, not a per-agent one.
+  is being scored, so it's a one-time setup cost, not a per-agent one. Not yet set up in this
+  environment (no Docker, no `swebench` package installed) as of the second data point above.
 - **This harness's multi-provider registry vs. single-model competitors**: Claude Code and Codex
   CLI each run on one underlying model per invocation; this harness may route a single instance's
   subtasks across several models. That's the entire point of the comparison (cost from *routing*
   vs. cost from a fixed model), but it means "which Claude Code model" and "which Codex model" are
   real choices that change the comparison's meaning — likely worth running against more than one
   reference model tier on each competitor rather than picking just their default.
-- **The router's decision doesn't reach execution yet** — confirmed, not hypothetical, by the
-  first real pilot instance above: `SubtaskRunner.attempt()` always builds its `Executor` from the
-  single `ModelClient` injected at construction time; `decision.modelId` from the router is used
-  only to report the outcome back to the bandit for learning ([subtask-runner.ts:87-93](../src/runner/subtask-runner.ts)),
-  never to pick which model actually executes. Every subtask call — and every escalation retry,
-  which is supposed to hand a failed attempt to a stronger model — currently runs on whatever
-  single model the caller happened to construct (Haiku 4.5 in `run-instance.ts`/`demo-real.ts`).
-  This is the same gap architecture.md's "provider abstraction" open question already names, but
-  worth calling out here specifically: until it's fixed, a pilot run measures "can the fixed
-  executor model alone solve these issues," not "does this harness's routing help" — which is the
-  actual question the benchmark exists to answer.
+- **The reward signal can disagree with the actual outcome** — confirmed by the second data point
+  above: a correct patch scored 0.33 with an empty `finalText` because the executor hit its turn
+  cap before emitting a final answer. A pilot that reported tmh's own reward instead of (or as a
+  proxy for) the official grader's `resolved` bool would misreport results like this one as
+  failures. Worth deciding whether `SubtaskRunner` should treat "made a correct edit but ran out of
+  turns" differently from "never touched the right file" before running a larger pilot, since right
+  now both look the same to the reward tier.
 - **Instance selection bias**: SWE-bench Lite instances are graded on Python repos almost
   exclusively; this harness's category/router split is language-agnostic in principle but has
   only been exercised in this repo's own TypeScript context so far. A pilot result here says
@@ -252,7 +297,8 @@ One instance is nowhere near enough to generalize from, but it's a concrete illu
   head-to-head run is really measuring cold-start behavior, not converged routing. Worth running
   the pilot slice twice (fresh state vs. warmed-up state from a prior pass) to separate the two.
 - **Not yet decided**: the loop infrastructure (`run-tmh-pilot.ts`, `prepare-claude-pilot.ts`,
-  `scripts/run-claude-pilot.sh`, `scripts/grade.sh`, `report.ts`) is built and verified, but running
-  it for real across all 20 pinned instances spends real API budget on both agents and is still
-  gated on whether to fix the router-to-executor wiring above first — otherwise the 20-instance
-  result is confounded by the same known gap the single validated instance already exposed.
+  `scripts/run-claude-pilot.sh`, `scripts/grade.sh`, `report.ts`) is built and verified, and the
+  router-wiring blocker from the first data point is resolved, but running the full 20-instance
+  pilot for real still spends real API budget across up to three agents and needs Docker + the
+  `swebench` package set up first (see the grading-environment question above) — that setup, not
+  the wiring gap, is the remaining prerequisite.

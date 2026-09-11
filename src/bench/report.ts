@@ -16,6 +16,14 @@ import type { InstanceRunLog } from "./types.js";
 // conversation's earlier cost discussion for why an exact split isn't available yet.
 const TMH_ESTIMATED_INPUT_RATE_PER_M = 1;
 const TMH_ESTIMATED_OUTPUT_RATE_PER_M = 5;
+// Prompt-cache read/write are billed at a different multiple of the base input rate, not the
+// input rate itself -- a caching-heavy run (many tool-loop turns replaying the same growing
+// context) can rack up far more cache tokens than fresh input tokens, so omitting these
+// undercounts total cost by several times rather than by a rounding error. Multiples match
+// Anthropic's standard cache pricing (1h TTL write, matching the 1h cache extension this harness
+// itself uses): write ~2x base input rate, read ~0.1x base input rate.
+const TMH_CACHE_WRITE_RATE_PER_M = TMH_ESTIMATED_INPUT_RATE_PER_M * 2;
+const TMH_CACHE_READ_RATE_PER_M = TMH_ESTIMATED_INPUT_RATE_PER_M * 0.1;
 
 interface GraderReport {
   total_instances: number;
@@ -44,8 +52,16 @@ function mean(values: number[]): number {
 
 function summarize(label: string, report: GraderReport, log: InstanceRunLog[], estimateCost: boolean) {
   const resolvedSet = new Set(report.resolved_ids);
-  const costs = log.map((l) =>
-    l.costUsd ?? (estimateCost ? (l.inputTokens * TMH_ESTIMATED_INPUT_RATE_PER_M + l.outputTokens * TMH_ESTIMATED_OUTPUT_RATE_PER_M) / 1_000_000 : 0)
+  const costs = log.map(
+    (l) =>
+      l.costUsd ??
+      (estimateCost
+        ? (l.inputTokens * TMH_ESTIMATED_INPUT_RATE_PER_M +
+            l.outputTokens * TMH_ESTIMATED_OUTPUT_RATE_PER_M +
+            (l.cacheCreationInputTokens ?? 0) * TMH_CACHE_WRITE_RATE_PER_M +
+            (l.cacheReadInputTokens ?? 0) * TMH_CACHE_READ_RATE_PER_M) /
+          1_000_000
+        : 0)
   );
   const totalCost = costs.reduce((a, b) => a + b, 0);
   const resolvedCount = report.resolved_instances;
