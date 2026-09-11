@@ -338,6 +338,51 @@ describe("FramedPrompt", () => {
       prompt.release();
     });
 
+    it("a resize mid-edit redraws BOTH dividers at the new width, not just the bottom one", async () => {
+      const { stream, send } = createFakeStream();
+      setColumns(80);
+      const prompt = new FramedPrompt("> ", stream);
+      prompt.show();
+      const result = prompt.ask();
+      send("typed");
+      writes.length = 0;
+
+      setColumns(40);
+      process.stdout.emit("resize");
+
+      // The top divider used to be painted once when the prompt opened and never again, so a
+      // widened window left it stopping short while the bottom one spanned the new width.
+      const narrow = "\u2500".repeat(40);
+      const occurrences = writes.join("").split(narrow).length - 1;
+      expect(occurrences).toBe(2);
+      expect(writes.join("")).not.toContain("\u2500".repeat(41));
+
+      send("\r");
+      await result;
+      prompt.release();
+    });
+
+    it("a keystroke repaint never writes past the bottom divider", async () => {
+      const { stream, send } = createFakeStream();
+      setColumns(40);
+      const prompt = new FramedPrompt("> ", stream);
+      const result = prompt.ask();
+      writes.length = 0;
+      send("x");
+
+      // The repaint used to end with a newline after the bottom divider, which at the bottom of
+      // the screen scrolled the terminal up a row -- the prompt appearing to print a blank line
+      // on its own. The cursor must leave that row by moving up, never by advancing past it.
+      const divider = "\u2500".repeat(40);
+      const lastDivider = writes.lastIndexOf(divider);
+      expect(lastDivider).toBeGreaterThan(-1);
+      expect(writes[lastDivider + 1]).toBe("\x1b[1A");
+
+      send("\r");
+      await result;
+      prompt.release();
+    });
+
     it("release() stops listening, so a later resize paints nothing", async () => {
       const { stream } = createFakeStream();
       const prompt = new FramedPrompt("> ", stream);

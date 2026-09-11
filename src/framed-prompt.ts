@@ -233,7 +233,6 @@ export class FramedPrompt {
   }
 
   private askLive(label: string): Promise<string> {
-    process.stdout.write(`${promptDivider()}\r\n`);
     // Autowrap stays off for the whole line: redraw() below chunks label+buffer into
     // terminal-width pieces itself and joins them with explicit `\r\n`, rather than writing one
     // long string and trusting the terminal to wrap it consistently with what redraw() thinks it
@@ -252,12 +251,19 @@ export class FramedPrompt {
       // shrink by a row as the user types or deletes.
       let inputRowCount = 1;
       let cursorRowOffset = 0;
+      // False until the first paint, which has nothing above it to move back up to.
+      let painted = false;
 
-      // Every redraw is a full repaint: move to the input's top-left, erase everything below (the
-      // wrapped input rows plus the bottom divider), rewrite all of it, then reposition the cursor
-      // to where it logically belongs within the buffer. More work per keystroke than a targeted
-      // in-place update, but far simpler to keep correct once the input can span multiple rows and
-      // the divider below it has to move with it.
+      // Every redraw is a full repaint of the whole frame: move to the top divider, erase
+      // everything below, rewrite all three parts, then reposition the cursor to where it
+      // logically belongs within the buffer. More work per keystroke than a targeted in-place
+      // update, but far simpler to keep correct once the input can span multiple rows and the
+      // divider below it has to move with it.
+      //
+      // The top divider is part of the repaint rather than something drawn once up front. Drawn
+      // once, it kept whatever width the window had when the prompt opened: widening the window
+      // left the bottom divider spanning the new width and the top one stopping short, because
+      // only the bottom one was inside the repaint.
       const redraw = (): void => {
         const width = process.stdout.columns || 80;
         // label may carry ANSI color codes (e.g. theme.neon("❯")), which are invisible but still
@@ -282,12 +288,19 @@ export class FramedPrompt {
         }
         inputRowCount = rows.length;
 
-        if (cursorRowOffset > 0) process.stdout.write(`\x1b[${cursorRowOffset}A`);
+        // Up past the input rows and the top divider above them (the +1).
+        if (painted) process.stdout.write(`\x1b[${cursorRowOffset + 1}A`);
+        painted = true;
+        const divider = promptDivider();
         process.stdout.write("\r\x1b[0J");
+        process.stdout.write(`${divider}\r\n`);
         process.stdout.write(rows.join("\r\n"));
         process.stdout.write("\r\n");
-        process.stdout.write(promptDivider());
-        process.stdout.write("\r\n");
+        // No newline after the bottom divider: the cursor stays *on* that row. Writing one put
+        // the cursor on a row below the frame, and with the frame sitting at the bottom of the
+        // screen that row didn't exist yet -- so every repaint scrolled the terminal up by one,
+        // which looked like the prompt spontaneously printing a blank line.
+        process.stdout.write(divider);
 
         let cursorRow = Math.floor(cursor / availableWidth);
         let cursorCol = labelWidth + (cursor % availableWidth);
@@ -299,7 +312,10 @@ export class FramedPrompt {
           cursorRow = inputRowCount - 1;
           cursorCol = width - 1;
         }
-        const rowsToMoveUp = inputRowCount + 1 - cursorRow; // +1 for the divider row just written
+        // Counting from the frame's top row: 0 is the top divider, 1..inputRowCount the input
+        // rows, inputRowCount + 1 the bottom divider the cursor is sitting on now. The target is
+        // row 1 + cursorRow, so the climb is the difference.
+        const rowsToMoveUp = inputRowCount - cursorRow;
         if (rowsToMoveUp > 0) process.stdout.write(`\x1b[${rowsToMoveUp}A`);
         process.stdout.write("\r");
         if (cursorCol > 0) process.stdout.write(`\x1b[${cursorCol}C`);
